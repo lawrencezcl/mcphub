@@ -18,11 +18,12 @@ interface SearchSuggestionsProps {
   suggestions: SearchSuggestion[];
   isLoading: boolean;
   onSelect: (suggestion: SearchSuggestion) => void;
+  onClose?: () => void;
   className?: string;
 }
 
 const SearchSuggestions = forwardRef<HTMLDivElement, SearchSuggestionsProps>(
-  ({ suggestions, isLoading, onSelect, className }, ref) => {
+  ({ suggestions, isLoading, onSelect, onClose, className }, ref) => {
     if (isLoading) {
       return (
         <div

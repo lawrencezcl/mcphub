@@ -11,6 +11,7 @@ import {
   DropdownMenuSeparator,
 } from '@/components/ui/dropdown-menu';
 import { useShare } from '@/hooks/useShare';
+import { cn } from '@/lib/utils';
 
 interface ShareButtonProps {
   toolId: number;
@@ -18,6 +19,7 @@ interface ShareButtonProps {
   variant?: 'default' | 'ghost' | 'outline';
   size?: 'sm' | 'default' | 'lg';
   showText?: boolean;
+  className?: string;
 }
 
 export function ShareButton({ 
@@ -25,7 +27,8 @@ export function ShareButton({
   toolName, 
   variant = 'ghost', 
   size = 'sm',
-  showText = false 
+  showText = false,
+  className
 }: ShareButtonProps) {
   const { shareToplatform, copyToClipboard, createShare, isSharing } = useShare();
   const [copied, setCopied] = useState(false);
@@ -91,7 +94,7 @@ export function ShareButton({
           variant={variant} 
           size={size}
           disabled={isSharing}
-          className="gap-1"
+          className={cn("gap-1", className)}
         >
           <Share2 className="h-4 w-4" />
           {showText && '分享'}
