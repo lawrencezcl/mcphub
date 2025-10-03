@@ -1,0 +1,63 @@
+{
+  "buildCommand": "npm run build",
+  "outputDirectory": ".next",
+  "installCommand": "npm install",
+  "framework": "nextjs",
+  "functions": {
+    "app/api/cron/crawl/route.ts": {
+      "maxDuration": 300
+    },
+    "app/api/admin/ingests/route.ts": {
+      "maxDuration": 60
+    }
+  },
+  "crons": [
+    {
+      "path": "/api/cron/crawl",
+      "schedule": "0 */6 * * *"
+    }
+  ],
+  "env": {
+    "DATABASE_URL": "@database_url",
+    "ADMIN_TOKEN": "@admin_token",
+    "DEEPSEEK_API_KEY": "@deepseek_api_key",
+    "GITHUB_TOKEN": "@github_token",
+    "CRON_SECRET": "@cron_secret"
+  },
+  "headers": [
+    {
+      "source": "/api/(.*)",
+      "headers": [
+        {
+          "key": "Access-Control-Allow-Origin",
+          "value": "*"
+        },
+        {
+          "key": "Access-Control-Allow-Methods",
+          "value": "GET, POST, PUT, DELETE, OPTIONS"
+        },
+        {
+          "key": "Access-Control-Allow-Headers",
+          "value": "Content-Type, Authorization"
+        }
+      ]
+    }
+  ],
+  "redirects": [
+    {
+      "source": "/admin",
+      "destination": "/admin/",
+      "permanent": true
+    }
+  ],
+  "rewrites": [
+    {
+      "source": "/health",
+      "destination": "/api/health"
+    },
+    {
+      "source": "/metrics",
+      "destination": "/api/metrics"
+    }
+  ]
+}

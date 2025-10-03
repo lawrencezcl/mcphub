@@ -1,9 +1,9 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
-import "./globals.css";
+import "../src/app/globals.css";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
-import { Search, Github } from "lucide-react";
+import { Github } from "lucide-react";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
