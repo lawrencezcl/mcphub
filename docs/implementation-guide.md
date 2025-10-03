@@ -1,7 +1,7 @@
 # MCPHub 实施指南
 
 ## 概述
-本指南基于优化后的系统设计，提供详细的实施步骤、代码示例和最佳实践，确保开发团队能够高效、准确地实现 MCPHub 系统。
+本指南基于当前系统架构，提供详细的实施步骤、代码示例和最佳实践，确保开发团队能够高效、准确地实现 MCPHub 系统。
 
 ## 阶段一：项目初始化与基础设施
 
@@ -16,49 +16,63 @@ cd mcphub
 # 安装核心依赖
 npm install @neondatabase/serverless drizzle-orm drizzle-kit
 npm install zod @hookform/resolvers react-hook-form
-npm install @radix-ui/react-slot @radix-ui/react-dialog
+npm install @radix-ui/react-slot @radix-ui/react-dialog @radix-ui/react-dropdown-menu
+npm install @radix-ui/react-select @radix-ui/react-tabs @radix-ui/react-toast
 npm install lucide-react class-variance-authority clsx tailwind-merge
+npm install next-auth @auth/drizzle-adapter
+npm install framer-motion
 
 # 安装开发依赖
 npm install -D @types/node tsx dotenv-cli
 npm install -D vitest @vitejs/plugin-react jsdom
 npm install -D @playwright/test
 npm install -D prettier prettier-plugin-tailwindcss
+npm install -D @types/react @types/react-dom
 ```
 
 ### 1.2 环境配置
 
 创建 `.env.local`：
 ```env
-# 数据库
-DATABASE_URL="postgresql://neondb_owner:npg_hYQK4Dl9MELZ@ep-rapid-mouse-adk1ua6k-pooler.c-2.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
+# 数据库连接
+DATABASE_URL="postgresql://username:password@host:port/database"
 
-# 认证
+# 管理员令牌
 ADMIN_TOKEN="your-secure-admin-token-here"
+
+# NextAuth 配置
 NEXTAUTH_SECRET="your-nextauth-secret"
 NEXTAUTH_URL="http://localhost:3000"
 
-# 外部服务
+# AI 服务配置
+DEEPSEEK_API_KEY="your-deepseek-api-key"
+DEEPSEEK_BASE_URL="https://api.deepseek.com"
+
+# GitHub API（可选，用于增强数据获取）
 GITHUB_TOKEN="your-github-token"
-AI_PROVIDER_API_KEY="your-ai-provider-key"
-UPSTASH_REDIS_URL="your-redis-url"
-UPSTASH_REDIS_TOKEN="your-redis-token"
 
 # 应用配置
-NEXT_PUBLIC_SITE_URL="http://localhost:3000"
 NEXT_PUBLIC_APP_NAME="MCPHub"
+NEXT_PUBLIC_APP_DESCRIPTION="MCP 工具导航与发现平台"
+NEXT_PUBLIC_APP_URL="http://localhost:3000"
+
+# 缓存配置（可选）
+UPSTASH_REDIS_URL="your-redis-url"
+UPSTASH_REDIS_TOKEN="your-redis-token"
 ```
 
 ### 1.3 项目结构创建
 
 ```bash
 mkdir -p src/{db,lib,components,types}
-mkdir -p src/lib/{auth,cache,crawl,llm,validators}
+mkdir -p src/lib/{auth,cache,crawl,llm,validators,utils}
 mkdir -p src/lib/crawl/fetchers
-mkdir -p src/components/{ui,cards,filters,admin}
-mkdir -p app/{admin,api,tools,categories,tags,submit,og}
-mkdir -p app/api/{admin,cron}
-mkdir -p app/admin/{sources,crawl,ingests}
+mkdir -p src/components/{ui,cards,filters,admin,forms}
+mkdir -p app/{admin,api,tools,categories,tags,submit,favorites}
+mkdir -p app/api/{admin,cron,tools,categories,tags,search,favorites}
+mkdir -p app/admin/{tools,categories,tags,sources,crawl,ingests,users}
+mkdir -p docs
+mkdir -p public/{images,icons}
 ```
 
 ## 阶段二：数据层实现
@@ -98,6 +112,255 @@ export const tools = pgTable('tools', {
   }>(),
   author: text('author'),
   license: text('license'),
+  logoUrl: text('logo_url'),
+  version: text('version'),
+  status: text('status', { enum: ['pending', 'approved', 'rejected', 'archived'] }).default('pending'),
+  sourceScore: integer('source_score').default(0),
+  popularityScore: integer('popularity_score').default(0),
+  qualityScore: decimal('quality_score', { precision: 3, scale: 2 }).default('0.0'),
+  // 详细信息字段，存储结构化的全面信息
+  detail: jsonb('detail').$type<{
+    overview?: {
+      serviceName?: string;
+      serviceDescription?: string;
+      summary?: string;
+    };
+    usageGuide?: {
+      deploymentProcess?: string[];
+      deploymentMethod?: string;
+      quickStart?: string;
+      examples?: string[];
+    };
+    coreFeatures?: string[];
+    applicationScenarios?: string[];
+    faq?: Array<{
+      question: string;
+      answer: string;
+    }>;
+    serverConfig?: {
+      configExample?: any;
+      installationSteps?: string[];
+      requirements?: string[];
+    };
+    additionalInfo?: {
+      documentationLinks?: string[];
+      apiReference?: string;
+      limitations?: string[];
+      performanceMetrics?: any;
+      errorCodes?: Array<{
+        code: string;
+        description: string;
+      }>;
+    };
+  }>(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow(),
+  lastCrawledAt: timestamp('last_crawled_at', { withTimezone: true }),
+});
+
+// 分类表
+export const categories = pgTable('categories', {
+  id: bigint('id', { mode: 'number' }).primaryKey().generatedAlwaysAsIdentity(),
+  name: text('name').notNull().unique(),
+  slug: text('slug').notNull().unique(),
+  description: text('description'),
+  icon: text('icon'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
+});
+
+// 标签表
+export const tags = pgTable('tags', {
+  id: bigint('id', { mode: 'number' }).primaryKey().generatedAlwaysAsIdentity(),
+  name: text('name').notNull().unique(),
+  slug: text('slug').notNull().unique(),
+  color: text('color').default('#6B7280'),
+});
+
+// 工具标签关联表
+export const toolTags = pgTable('tool_tags', {
+  toolId: bigint('tool_id', { mode: 'number' }).notNull().references(() => tools.id, { onDelete: 'cascade' }),
+  tagId: bigint('tag_id', { mode: 'number' }).notNull().references(() => tags.id, { onDelete: 'cascade' }),
+}, (t) => ({
+  pk: primaryKey({ columns: [t.toolId, t.tagId] }),
+}));
+
+// 工具分类关联表
+export const toolCategories = pgTable('tool_categories', {
+  toolId: bigint('tool_id', { mode: 'number' }).notNull().references(() => tools.id, { onDelete: 'cascade' }),
+  categoryId: bigint('category_id', { mode: 'number' }).notNull().references(() => categories.id, { onDelete: 'cascade' }),
+}, (t) => ({
+  pk: primaryKey({ columns: [t.toolId, t.categoryId] }),
+}));
+
+// 用户表
+export const users = pgTable('users', {
+  id: bigint('id', { mode: 'number' }).primaryKey().generatedAlwaysAsIdentity(),
+  analyticsOptIn: boolean('analytics_opt_in').default(false).notNull(),
+  dataRetention: text('data_retention').default('90days').notNull(),
+  firstName: text('first_name').notNull(),
+  lastActive: timestamp('last_active', { precision: 3, withTimezone: true }).defaultNow().notNull(),
+  maxNotificationsPerDay: integer('max_notifications_per_day').default(10).notNull(),
+  notificationFrequency: text('notification_frequency').default('daily').notNull(),
+  telegramId: bigint('telegram_id', { mode: 'number' }).notNull(),
+  username: text('username'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow(),
+});
+
+// 提交表
+export const submissions = pgTable('submissions', {
+  id: bigint('id', { mode: 'number' }).primaryKey().generatedAlwaysAsIdentity(),
+  submitterEmail: text('submitter_email'),
+  payload: jsonb('payload').$type<Partial<typeof tools.$inferInsert>>(),
+  status: text('status', { enum: ['pending', 'approved', 'rejected'] }).default('pending'),
+  moderatorNote: text('moderator_note'),
+  moderatorId: bigint('moderator_id', { mode: 'number' }).references(() => users.id),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow(),
+});
+
+// 浏览量统计表
+export const views = pgTable('views', {
+  toolId: bigint('tool_id', { mode: 'number' }).notNull().references(() => tools.id, { onDelete: 'cascade' }),
+  date: date('date').notNull(),
+  count: integer('count').default(0),
+}, (t) => ({
+  pk: primaryKey({ columns: [t.toolId, t.date] }),
+}));
+
+// 点赞表
+export const likes = pgTable('likes', {
+  userId: bigint('user_id', { mode: 'number' }).notNull().references(() => users.id, { onDelete: 'cascade' }),
+  toolId: bigint('tool_id', { mode: 'number' }).notNull().references(() => tools.id, { onDelete: 'cascade' }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
+}, (t) => ({
+  pk: primaryKey({ columns: [t.userId, t.toolId] }),
+}));
+
+// 收藏表
+export const favorites = pgTable('favorites', {
+  userId: bigint('user_id', { mode: 'number' }).notNull().references(() => users.id, { onDelete: 'cascade' }),
+  toolId: bigint('tool_id', { mode: 'number' }).notNull().references(() => tools.id, { onDelete: 'cascade' }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
+}, (t) => ({
+  pk: primaryKey({ columns: [t.userId, t.toolId] }),
+}));
+
+// 分享表
+export const shares = pgTable('shares', {
+  id: bigint('id', { mode: 'number' }).primaryKey().generatedAlwaysAsIdentity(),
+  toolId: bigint('tool_id', { mode: 'number' }).notNull().references(() => tools.id, { onDelete: 'cascade' }),
+  shareId: text('share_id').notNull().unique(), // 唯一分享ID
+  platform: text('platform', { enum: ['link', 'twitter', 'linkedin', 'facebook', 'email', 'wechat', 'weibo'] }).notNull(),
+  userAgent: text('user_agent'),
+  ipAddress: inet('ip_address'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
+});
+
+// 数据源表
+export const sources = pgTable('sources', {
+  id: bigint('id', { mode: 'number' }).primaryKey().generatedAlwaysAsIdentity(),
+  type: text('type', { enum: ['github_topic', 'npm_query', 'awesome_list', 'website'] }).notNull(),
+  identifier: text('identifier').notNull(),
+  enabled: boolean('enabled').default(true),
+  config: jsonb('config').$type<Record<string, any>>(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow(),
+});
+
+// 抓取任务表
+export const crawlJobs = pgTable('crawl_jobs', {
+  id: bigint('id', { mode: 'number' }).primaryKey().generatedAlwaysAsIdentity(),
+  sourceId: bigint('source_id', { mode: 'number' }).notNull().references(() => sources.id),
+  status: text('status', { enum: ['queued', 'running', 'completed', 'failed'] }).notNull(),
+  startedAt: timestamp('started_at', { withTimezone: true }),
+  finishedAt: timestamp('finished_at', { withTimezone: true }),
+  stats: jsonb('stats').$type<{
+    itemsFound?: number;
+    itemsProcessed?: number;
+    errors?: number;
+    duration?: number;
+  }>(),
+  error: text('error'),
+});
+
+// 抓取结果表
+export const crawlResults = pgTable('crawl_results', {
+  id: bigint('id', { mode: 'number' }).primaryKey().generatedAlwaysAsIdentity(),
+  jobId: bigint('job_id', { mode: 'number' }).notNull().references(() => crawlJobs.id),
+  canonicalUrl: text('canonical_url'),
+  rawTitle: text('raw_title'),
+  rawDescription: text('raw_description'),
+  rawReadme: text('raw_readme'),
+  rawMetadata: jsonb('raw_metadata'),
+  dedupeHash: text('dedupe_hash').unique(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
+});
+
+// LLM 处理任务表
+export const llmJobs = pgTable('llm_jobs', {
+  id: bigint('id', { mode: 'number' }).primaryKey().generatedAlwaysAsIdentity(),
+  resultId: bigint('result_id', { mode: 'number' }).notNull().references(() => crawlResults.id),
+  status: text('status', { enum: ['queued', 'running', 'completed', 'failed'] }).notNull(),
+  model: text('model'),
+  promptVersion: text('prompt_version'),
+  output: jsonb('output').$type<{
+    summary?: string;
+    tags?: string[];
+    category?: string;
+    runtimeSupport?: {
+      node?: boolean;
+      edge?: boolean;
+      browser?: boolean;
+    };
+    risks?: string[];
+  }>(),
+  error: text('error'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
+  finishedAt: timestamp('finished_at', { withTimezone: true }),
+});
+
+// 入库映射表
+export const ingests = pgTable('ingests', {
+  id: bigint('id', { mode: 'number' }).primaryKey().generatedAlwaysAsIdentity(),
+  toolId: bigint('tool_id', { mode: 'number' }).references(() => tools.id),
+  llmJobId: bigint('llm_job_id', { mode: 'number' }).notNull().references(() => llmJobs.id),
+  status: text('status', { enum: ['pending_review', 'approved', 'rejected'] }).notNull(),
+  reason: text('reason'),
+  moderatorId: bigint('moderator_id', { mode: 'number' }).references(() => users.id),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow(),
+});
+
+// 审计日志表
+export const auditLogs = pgTable('audit_logs', {
+  id: bigint('id', { mode: 'number' }).primaryKey().generatedAlwaysAsIdentity(),
+  tableName: text('table_name').notNull(),
+  recordId: bigint('record_id', { mode: 'number' }).notNull(),
+  action: text('action', { enum: ['INSERT', 'UPDATE', 'DELETE'] }).notNull(),
+  oldValues: jsonb('old_values'),
+  newValues: jsonb('new_values'),
+  userId: bigint('user_id', { mode: 'number' }).references(() => users.id),
+  ipAddress: inet('ip_address'),
+  userAgent: text('user_agent'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
+});
+
+// 类型导出
+export type Tool = typeof tools.$inferSelect;
+export type NewTool = typeof tools.$inferInsert;
+export type Category = typeof categories.$inferSelect;
+export type Tag = typeof tags.$inferSelect;
+export type User = typeof users.$inferSelect;
+export type Submission = typeof submissions.$inferSelect;
+export type Source = typeof sources.$inferSelect;
+export type CrawlJob = typeof crawlJobs.$inferSelect;
+export type CrawlResult = typeof crawlResults.$inferSelect;
+export type LLMJob = typeof llmJobs.$inferSelect;
+export type Ingest = typeof ingests.$inferSelect;
+export type Share = typeof shares.$inferSelect;
+export type NewShare = typeof shares.$inferInsert;
+```
   logoUrl: text('logo_url'),
   version: text('version'),
   status: text('status', { enum: ['pending', 'approved', 'rejected', 'archived'] }).default('pending'),
@@ -435,6 +698,157 @@ export const SearchQuerySchema = z.object({
   tag: z.string().optional(),
   runtime: z.enum(['node', 'edge', 'browser']).optional(),
 }).merge(PaginationQuerySchema);
+
+// 工具创建/更新
+export const ToolCreateSchema = z.object({
+  name: z.string().min(1).max(200),
+  description: z.string().max(1000).optional(),
+  repoUrl: z.string().url().optional(),
+  homepageUrl: z.string().url().optional(),
+  packageName: z.string().optional(),
+  installCmd: z.string().optional(),
+  runtimeSupport: z.object({
+    node: z.boolean().optional(),
+    edge: z.boolean().optional(),
+    browser: z.boolean().optional(),
+  }).optional(),
+  author: z.string().optional(),
+  license: z.string().optional(),
+  logoUrl: z.string().url().optional(),
+  version: z.string().optional(),
+  categoryIds: z.array(z.number()).optional(),
+  tagIds: z.array(z.number()).optional(),
+  detail: z.object({
+    overview: z.object({
+      serviceName: z.string().optional(),
+      serviceDescription: z.string().optional(),
+      summary: z.string().optional(),
+    }).optional(),
+    usageGuide: z.object({
+      deploymentProcess: z.array(z.string()).optional(),
+      deploymentMethod: z.string().optional(),
+      quickStart: z.string().optional(),
+      examples: z.array(z.string()).optional(),
+    }).optional(),
+    coreFeatures: z.array(z.string()).optional(),
+    applicationScenarios: z.array(z.string()).optional(),
+    faq: z.array(z.object({
+      question: z.string(),
+      answer: z.string(),
+    })).optional(),
+    serverConfig: z.object({
+      configExample: z.any().optional(),
+      installationSteps: z.array(z.string()).optional(),
+      requirements: z.array(z.string()).optional(),
+    }).optional(),
+    additionalInfo: z.object({
+      documentationLinks: z.array(z.string()).optional(),
+      apiReference: z.string().optional(),
+      limitations: z.array(z.string()).optional(),
+      performanceMetrics: z.any().optional(),
+      errorCodes: z.array(z.object({
+        code: z.string(),
+        description: z.string(),
+      })).optional(),
+    }).optional(),
+  }).optional(),
+});
+
+export const ToolUpdateSchema = ToolCreateSchema.partial();
+
+// 提交审核
+export const SubmissionCreateSchema = z.object({
+  submitterEmail: z.string().email().optional(),
+  payload: ToolCreateSchema,
+});
+
+// 审核操作
+export const ReviewSubmissionSchema = z.object({
+  status: z.enum(['approved', 'rejected']),
+  moderatorNote: z.string().optional(),
+});
+
+// 数据源配置
+export const SourceCreateSchema = z.object({
+  type: z.enum(['github_topic', 'npm_query', 'awesome_list', 'website']),
+  identifier: z.string().min(1),
+  enabled: z.boolean().default(true),
+  config: z.record(z.any()).optional(),
+});
+
+// 分享记录
+export const ShareCreateSchema = z.object({
+  toolId: z.number(),
+  platform: z.enum(['link', 'twitter', 'linkedin', 'facebook', 'email', 'wechat', 'weibo']),
+  userAgent: z.string().optional(),
+  ipAddress: z.string().optional(),
+});
+
+export type PaginationQuery = z.infer<typeof PaginationQuerySchema>;
+export type SearchQuery = z.infer<typeof SearchQuerySchema>;
+export type ToolCreate = z.infer<typeof ToolCreateSchema>;
+export type ToolUpdate = z.infer<typeof ToolUpdateSchema>;
+export type SubmissionCreate = z.infer<typeof SubmissionCreateSchema>;
+export type ReviewSubmission = z.infer<typeof ReviewSubmissionSchema>;
+export type SourceCreate = z.infer<typeof SourceCreateSchema>;
+export type ShareCreate = z.infer<typeof ShareCreateSchema>;
+```
+
+### 3.2 API 响应格式
+
+`src/lib/api-response.ts`：
+```typescript
+export interface ApiResponse<T = any> {
+  success: boolean;
+  data?: T;
+  error?: string;
+  message?: string;
+  pagination?: {
+    page: number;
+    pageSize: number;
+    total: number;
+    totalPages: number;
+  };
+}
+
+export function createSuccessResponse<T>(
+  data: T,
+  message?: string,
+  pagination?: ApiResponse['pagination']
+): ApiResponse<T> {
+  return {
+    success: true,
+    data,
+    message,
+    pagination,
+  };
+}
+
+export function createErrorResponse(
+  error: string,
+  message?: string
+): ApiResponse {
+  return {
+    success: false,
+    error,
+    message,
+  };
+}
+
+// 分页辅助函数
+export function createPagination(
+  page: number,
+  pageSize: number,
+  total: number
+): ApiResponse['pagination'] {
+  return {
+    page,
+    pageSize,
+    total,
+    totalPages: Math.ceil(total / pageSize),
+  };
+}
+```
 
 // 工具创建
 export const ToolCreateSchema = z.object({

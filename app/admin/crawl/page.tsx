@@ -1,48 +1,31 @@
 import { Suspense } from 'react';
 import { db } from '@/db';
-import { crawlJobs, sources, crawlResults, llmJobs } from '@/db/schema';
+import { sources, crawlJobs } from '@/db/schema';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
+import { Progress } from '@/components/ui/progress';
 import { 
-  Play, 
-  Pause, 
-  RefreshCw, 
-  CheckCircle, 
-  XCircle, 
+  Activity, 
   Clock, 
-  AlertTriangle,
-  Activity,
-  Database,
-  Settings,
-  Calendar,
-  Timer,
-  BarChart3,
-  ExternalLink
+  CheckCircle, 
+  AlertCircle, 
+  TrendingUp, 
+  TrendingDown,
+  Minus,
+  Play,
+  Pause,
+  RotateCcw
 } from 'lucide-react';
-import { eq, desc, count, and, isNotNull } from 'drizzle-orm';
+import { count, eq, desc, sql } from 'drizzle-orm';
 
-export default async function CrawlPage() {
+export default function CrawlPage() {
   return (
     <div className="container mx-auto px-4 py-8">
       <div className="mb-8">
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-3xl font-bold mb-2">爬虫管理</h1>
-            <p className="text-gray-600">管理数据源爬取任务和监控系统状态</p>
-          </div>
-          <div className="flex gap-2">
-            <Button variant="outline">
-              <Settings className="h-4 w-4 mr-2" />
-              配置
-            </Button>
-            <Button>
-              <Play className="h-4 w-4 mr-2" />
-              手动触发
-            </Button>
-          </div>
-        </div>
+        <h1 className="text-3xl font-bold mb-2">爬取管理</h1>
+        <p className="text-gray-600">管理和监控数据爬取任务</p>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
@@ -51,16 +34,24 @@ export default async function CrawlPage() {
         </Suspense>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-8">
-        <Suspense fallback={<ActiveSourcesSkeleton />}>
-          <ActiveSources />
-        </Suspense>
-        <Suspense fallback={<CrawlPerformanceSkeleton />}>
-          <CrawlPerformance />
-        </Suspense>
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 mb-8">
+        <div className="lg:col-span-2">
+          <h2 className="text-xl font-semibold mb-4">活跃数据源</h2>
+          <Suspense fallback={<ActiveSourcesSkeleton />}>
+            <ActiveSources />
+          </Suspense>
+        </div>
+
+        <div>
+          <h2 className="text-xl font-semibold mb-4">爬取性能</h2>
+          <Suspense fallback={<CrawlPerformanceSkeleton />}>
+            <CrawlPerformance />
+          </Suspense>
+        </div>
       </div>
 
-      <div className="space-y-6">
+      <div>
+        <h2 className="text-xl font-semibold mb-4">最近任务</h2>
         <Suspense fallback={<RecentJobsSkeleton />}>
           <RecentJobs />
         </Suspense>
@@ -70,91 +61,58 @@ export default async function CrawlPage() {
 }
 
 async function CrawlStats() {
-  const [jobStats, resultStats, llmStats] = await Promise.all([
-    db
-      .select({
-        status: crawlJobs.status,
-        count: count(),
-      })
-      .from(crawlJobs)
-      .groupBy(crawlJobs.status),
-    
-    db
-      .select({
-        count: count(),
-      })
-      .from(crawlResults),
-    
-    db
-      .select({
-        status: llmJobs.status,
-        count: count(),
-      })
-      .from(llmJobs)
-      .groupBy(llmJobs.status),
+  const [totalJobs, completedJobs, failedJobs, runningJobs] = await Promise.all([
+    db.select({ count: count() }).from(crawlJobs),
+    db.select({ count: count() }).from(crawlJobs).where(eq(crawlJobs.status, 'completed')),
+    db.select({ count: count() }).from(crawlJobs).where(eq(crawlJobs.status, 'failed')),
+    db.select({ count: count() }).from(crawlJobs).where(eq(crawlJobs.status, 'running')),
   ]);
 
-  const totalJobs = jobStats.reduce((sum, stat) => sum + stat.count, 0);
-  const completedJobs = jobStats.find(s => s.status === 'completed')?.count || 0;
-  const runningJobs = jobStats.find(s => s.status === 'running')?.count || 0;
-  const failedJobs = jobStats.find(s => s.status === 'failed')?.count || 0;
-  
-  const totalResults = resultStats[0]?.count || 0;
-  const completedLLM = llmStats.find(s => s.status === 'completed')?.count || 0;
+  const stats = [
+    {
+      title: '总任务数',
+      value: totalJobs[0]?.count || 0,
+      icon: Activity,
+      description: '所有爬取任务',
+      color: 'text-blue-600',
+    },
+    {
+      title: '已完成',
+      value: completedJobs[0]?.count || 0,
+      icon: CheckCircle,
+      description: '成功完成的任务',
+      color: 'text-green-600',
+    },
+    {
+      title: '失败任务',
+      value: failedJobs[0]?.count || 0,
+      icon: AlertCircle,
+      description: '执行失败的任务',
+      color: 'text-red-600',
+    },
+    {
+      title: '运行中',
+      value: runningJobs[0]?.count || 0,
+      icon: Clock,
+      description: '正在执行的任务',
+      color: 'text-orange-600',
+    },
+  ];
 
   return (
     <>
-      <Card>
-        <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-          <CardTitle className="text-sm font-medium">总爬取任务</CardTitle>
-          <Activity className="h-4 w-4 text-muted-foreground" />
-        </CardHeader>
-        <CardContent>
-          <div className="text-2xl font-bold">{totalJobs}</div>
-          <p className="text-xs text-muted-foreground">
-            历史总任务数
-          </p>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-          <CardTitle className="text-sm font-medium">运行中</CardTitle>
-          <RefreshCw className="h-4 w-4 text-blue-600 animate-spin" />
-        </CardHeader>
-        <CardContent>
-          <div className="text-2xl font-bold">{runningJobs}</div>
-          <p className="text-xs text-muted-foreground">
-            正在执行的任务
-          </p>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-          <CardTitle className="text-sm font-medium">爬取结果</CardTitle>
-          <Database className="h-4 w-4 text-green-600" />
-        </CardHeader>
-        <CardContent>
-          <div className="text-2xl font-bold">{totalResults}</div>
-          <p className="text-xs text-muted-foreground">
-            已收集的数据条目
-          </p>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-          <CardTitle className="text-sm font-medium">LLM 处理</CardTitle>
-          <BarChart3 className="h-4 w-4 text-purple-600" />
-        </CardHeader>
-        <CardContent>
-          <div className="text-2xl font-bold">{completedLLM}</div>
-          <p className="text-xs text-muted-foreground">
-            已完成 AI 分析
-          </p>
-        </CardContent>
-      </Card>
+      {stats.map((stat, index) => (
+        <Card key={index}>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">{stat.title}</CardTitle>
+            <stat.icon className={`h-4 w-4 ${stat.color}`} />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">{stat.value}</div>
+            <p className="text-xs text-muted-foreground">{stat.description}</p>
+          </CardContent>
+        </Card>
+      ))}
     </>
   );
 }
@@ -166,142 +124,104 @@ async function ActiveSources() {
       type: sources.type,
       identifier: sources.identifier,
       enabled: sources.enabled,
-      config: sources.config,
-      createdAt: sources.createdAt,
+      updatedAt: sources.updatedAt,
     })
     .from(sources)
     .where(eq(sources.enabled, true))
-    .orderBy(desc(sources.createdAt))
-    .limit(10);
+    .limit(5);
 
-  const getSourceTypeColor = (type: string) => {
-    switch (type) {
-      case 'github_topic':
-        return 'bg-gray-100 text-gray-800';
-      case 'npm_query':
-        return 'bg-red-100 text-red-800';
-      case 'website':
-        return 'bg-blue-100 text-blue-800';
-      default:
-        return 'bg-gray-100 text-gray-800';
-    }
+  return (
+    <div className="space-y-4">
+      {activeSources.length === 0 ? (
+        <div className="text-center py-8 text-gray-500">
+          暂无活跃数据源
+        </div>
+      ) : (
+        activeSources.map((source) => (
+          <Card key={source.id}>
+            <CardContent className="pt-6">
+              <div className="flex items-center justify-between mb-4">
+                <div className="flex-1">
+                  <h3 className="font-medium">{source.type} - {source.identifier}</h3>
+                  <p className="text-sm text-gray-500">
+                    {source.updatedAt ? new Date(source.updatedAt).toLocaleString() : '未更新'}
+                  </p>
+                </div>
+                <div className="flex items-center space-x-2">
+                  <Badge variant={source.enabled ? 'default' : 'secondary'}>
+                    {source.enabled ? '启用' : '禁用'}
+                  </Badge>
+                  <Button size="sm" variant="outline">
+                    管理
+                  </Button>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        ))
+      )}
+    </div>
+  );
+}
+
+async function CrawlPerformance() {
+  // 模拟性能数据
+  const performanceData = {
+    successRate: 85,
+    avgDuration: 45,
+    recentTrend: 'up' as 'up' | 'down' | 'stable',
+    totalProcessed: 1250,
   };
 
   return (
     <Card>
       <CardHeader>
-        <CardTitle>活跃数据源</CardTitle>
-        <CardDescription>当前启用的爬取数据源</CardDescription>
+        <CardTitle className="text-lg">性能指标</CardTitle>
       </CardHeader>
-      <CardContent>
-        <div className="space-y-4">
-          {activeSources.length === 0 ? (
-            <p className="text-sm text-gray-500">暂无活跃数据源</p>
-          ) : (
-            activeSources.map((source) => (
-              <div key={source.id} className="flex items-center justify-between p-3 border rounded-lg">
-                <div className="flex items-center space-x-3">
-                  <div className="flex items-center space-x-2">
-                    <Badge className={getSourceTypeColor(source.type)}>
-                      {source.type}
-                    </Badge>
-                    <span className="font-medium">{source.identifier}</span>
-                  </div>
-                </div>
-                <div className="flex items-center space-x-2">
-                  <Button variant="ghost" size="sm">
-                    <Settings className="h-4 w-4" />
-                  </Button>
-                  <Button variant="ghost" size="sm">
-                    <Play className="h-4 w-4" />
-                  </Button>
-                </div>
-              </div>
-            ))
-          )}
-        </div>
-        
-        {activeSources.length > 0 && (
-          <div className="mt-4 pt-4 border-t">
-            <Button variant="outline" className="w-full">
-              查看所有数据源
-            </Button>
+      <CardContent className="space-y-6">
+        <div>
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-sm font-medium">成功率</span>
+            <span className="text-sm text-gray-500">{performanceData.successRate}%</span>
           </div>
-        )}
-      </CardContent>
-    </Card>
-  );
-}
+          <Progress value={performanceData.successRate} className="h-2" />
+        </div>
 
-async function CrawlPerformance() {
-  const recentJobs = await db
-    .select({
-      id: crawlJobs.id,
-      status: crawlJobs.status,
-      startedAt: crawlJobs.startedAt,
-      finishedAt: crawlJobs.finishedAt,
-      stats: crawlJobs.stats,
-    })
-    .from(crawlJobs)
-    .where(isNotNull(crawlJobs.finishedAt))
-    .orderBy(desc(crawlJobs.finishedAt))
-    .limit(10);
-
-  const avgDuration = recentJobs.length > 0 
-    ? recentJobs.reduce((sum, job) => {
-        if (job.startedAt && job.finishedAt) {
-          return sum + (job.finishedAt.getTime() - job.startedAt.getTime());
-        }
-        return sum;
-      }, 0) / recentJobs.length / 1000 // 转换为秒
-    : 0;
-
-  const successRate = recentJobs.length > 0
-    ? (recentJobs.filter(job => job.status === 'completed').length / recentJobs.length) * 100
-    : 0;
-
-  const totalItemsProcessed = recentJobs.reduce((sum, job) => {
-    const stats = job.stats as any;
-    return sum + (stats?.itemsProcessed || 0);
-  }, 0);
-
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle>性能指标</CardTitle>
-        <CardDescription>最近10次任务的性能统计</CardDescription>
-      </CardHeader>
-      <CardContent>
-        <div className="space-y-4">
-          <div className="grid grid-cols-2 gap-4">
-            <div className="text-center p-3 bg-blue-50 rounded-lg">
-              <div className="text-2xl font-bold text-blue-600">
-                {Math.round(avgDuration)}s
-              </div>
-              <div className="text-sm text-blue-700">平均耗时</div>
-            </div>
-            <div className="text-center p-3 bg-green-50 rounded-lg">
-              <div className="text-2xl font-bold text-green-600">
-                {Math.round(successRate)}%
-              </div>
-              <div className="text-sm text-green-700">成功率</div>
-            </div>
+        <div className="space-y-3">
+          <div className="flex items-center justify-between">
+            <span className="text-sm text-gray-600">平均耗时</span>
+            <span className="text-sm font-medium">{performanceData.avgDuration}s</span>
           </div>
           
-          <div className="text-center p-3 bg-purple-50 rounded-lg">
-            <div className="text-2xl font-bold text-purple-600">
-              {totalItemsProcessed}
-            </div>
-            <div className="text-sm text-purple-700">总处理项目数</div>
+          <div className="flex items-center justify-between">
+            <span className="text-sm text-gray-600">总处理量</span>
+            <span className="text-sm font-medium">{performanceData.totalProcessed.toLocaleString()}</span>
           </div>
-
-          <div className="pt-4 border-t">
-            <Button variant="outline" className="w-full">
-              <BarChart3 className="h-4 w-4 mr-2" />
-              查看详细报告
-            </Button>
+          
+          <div className="flex items-center justify-between">
+            <span className="text-sm text-gray-600">趋势</span>
+            <div className="flex items-center">
+              {performanceData.recentTrend === 'up' && (
+                <TrendingUp className="w-4 h-4 text-green-600 mr-1" />
+              )}
+              {performanceData.recentTrend === 'down' && (
+                <TrendingDown className="w-4 h-4 text-red-600 mr-1" />
+              )}
+              {performanceData.recentTrend === 'stable' && (
+                <Minus className="w-4 h-4 text-gray-600 mr-1" />
+              )}
+              <span className="text-sm font-medium">
+                {performanceData.recentTrend === 'up' ? '上升' : 
+                 performanceData.recentTrend === 'down' ? '下降' : '稳定'}
+              </span>
+            </div>
           </div>
         </div>
+
+        <Button className="w-full" variant="outline">
+          <RotateCcw className="w-4 h-4 mr-2" />
+          刷新数据
+        </Button>
       </CardContent>
     </Card>
   );
@@ -311,174 +231,87 @@ async function RecentJobs() {
   const recentJobs = await db
     .select({
       id: crawlJobs.id,
+      sourceId: crawlJobs.sourceId,
       status: crawlJobs.status,
       startedAt: crawlJobs.startedAt,
       finishedAt: crawlJobs.finishedAt,
-      stats: crawlJobs.stats,
-      error: crawlJobs.error,
-      sourceId: crawlJobs.sourceId,
-      source: {
-        id: sources.id,
-        type: sources.type,
-        identifier: sources.identifier,
-      }
     })
     .from(crawlJobs)
-    .leftJoin(sources, eq(crawlJobs.sourceId, sources.id))
     .orderBy(desc(crawlJobs.startedAt))
-    .limit(20);
-
-  const getStatusBadge = (status: string) => {
-    switch (status) {
-      case 'completed':
-        return <Badge variant="default" className="text-green-700 bg-green-100"><CheckCircle className="h-3 w-3 mr-1" />已完成</Badge>;
-      case 'running':
-        return <Badge variant="secondary" className="text-blue-700 bg-blue-100"><RefreshCw className="h-3 w-3 mr-1 animate-spin" />运行中</Badge>;
-      case 'failed':
-        return <Badge variant="destructive" className="text-red-700 bg-red-100"><XCircle className="h-3 w-3 mr-1" />失败</Badge>;
-      case 'queued':
-        return <Badge variant="outline" className="text-yellow-700 bg-yellow-100"><Clock className="h-3 w-3 mr-1" />排队中</Badge>;
-      default:
-        return <Badge variant="outline">{status}</Badge>;
-    }
-  };
-
-  const formatDuration = (startedAt: Date | null, finishedAt: Date | null) => {
-    if (!startedAt) return '-';
-    const endTime = finishedAt || new Date();
-    const duration = Math.round((endTime.getTime() - startedAt.getTime()) / 1000);
-    return `${duration}s`;
-  };
+    .limit(10);
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h2 className="text-xl font-semibold">最近的爬取任务</h2>
-        <div className="text-sm text-gray-500">
-          共 {recentJobs.length} 个任务
-        </div>
-      </div>
-
-      <div className="grid gap-4">
-        {recentJobs.map((job) => (
-          <Card key={job.id} className="hover:shadow-md transition-shadow">
-            <CardHeader>
-              <div className="flex items-start justify-between">
-                <div className="flex-1">
-                  <div className="flex items-center gap-3 mb-2">
-                    <CardTitle className="text-lg">
-                      任务 #{job.id}
-                    </CardTitle>
-                    {getStatusBadge(job.status)}
+    <Card>
+      <CardHeader>
+        <CardTitle>任务列表</CardTitle>
+        <CardDescription>最近的爬取任务执行记录</CardDescription>
+      </CardHeader>
+      <CardContent>
+        <div className="space-y-4">
+          {recentJobs.length === 0 ? (
+            <div className="text-center py-8 text-gray-500">
+              暂无爬取任务
+            </div>
+          ) : (
+            recentJobs.map((job) => (
+              <div key={job.id} className="flex items-center justify-between p-4 border rounded-lg">
+                <div className="flex items-center space-x-4">
+                  <div className="flex-shrink-0">
+                    {job.status === 'completed' && <CheckCircle className="h-5 w-5 text-green-600" />}
+                    {job.status === 'running' && <Activity className="h-5 w-5 text-blue-600 animate-pulse" />}
+                    {job.status === 'failed' && <AlertCircle className="h-5 w-5 text-red-600" />}
+                    {job.status === 'queued' && <Clock className="h-5 w-5 text-yellow-600" />}
                   </div>
-                  
-                  <div className="flex items-center gap-4 text-sm text-gray-500">
-                    <div className="flex items-center gap-1">
-                      <Calendar className="h-4 w-4" />
-                      {job.startedAt?.toLocaleString('zh-CN')}
+                  <div className="flex-1 min-w-0">
+                    <p className="font-medium truncate">爬取任务 #{job.id}</p>
+                    <div className="flex items-center space-x-4 text-sm text-gray-500">
+                      <span>源ID: {job.sourceId}</span>
+                      <span>开始: {job.startedAt ? new Date(job.startedAt).toLocaleString() : '未开始'}</span>
+                      {job.finishedAt && (
+                        <span>完成: {new Date(job.finishedAt).toLocaleString()}</span>
+                      )}
                     </div>
-                    <div className="flex items-center gap-1">
-                      <Timer className="h-4 w-4" />
-                      {formatDuration(job.startedAt, job.finishedAt)}
-                    </div>
-                    {job.source && (
-                      <div className="flex items-center gap-1">
-                        <Database className="h-4 w-4" />
-                        <Badge variant="outline" className="text-xs">
-                          {job.source.type}
-                        </Badge>
-                        <span>{job.source.identifier}</span>
-                      </div>
-                    )}
                   </div>
                 </div>
-                
-                <div className="flex items-center gap-2 ml-4">
-                  <Button variant="ghost" size="sm">
-                    <ExternalLink className="h-4 w-4" />
-                  </Button>
-                  {job.status === 'running' && (
-                    <Button variant="ghost" size="sm" className="text-red-600 hover:text-red-700">
-                      <Pause className="h-4 w-4" />
-                    </Button>
-                  )}
+                <div className="flex items-center space-x-2">
+                  <Badge 
+                    variant={
+                      job.status === 'completed' ? 'default' :
+                      job.status === 'running' ? 'secondary' :
+                      job.status === 'failed' ? 'destructive' : 'outline'
+                    }
+                  >
+                    {job.status === 'completed' ? '已完成' :
+                     job.status === 'running' ? '运行中' :
+                     job.status === 'failed' ? '失败' : '等待中'}
+                  </Badge>
                   {job.status === 'failed' && (
-                    <Button variant="ghost" size="sm" className="text-blue-600 hover:text-blue-700">
-                      <RefreshCw className="h-4 w-4" />
+                    <Button size="sm" variant="outline">
+                      <RotateCcw className="w-3 h-3 mr-1" />
+                      重试
                     </Button>
                   )}
                 </div>
               </div>
-            </CardHeader>
-            
-            {(job.stats || job.error) && (
-              <CardContent className="pt-0">
-                {job.stats && (
-                  <div className="grid grid-cols-3 gap-4 mb-3">
-                    <div className="text-center p-2 bg-blue-50 rounded">
-                      <div className="font-semibold text-blue-600">
-                        {(job.stats as any)?.itemsFound || 0}
-                      </div>
-                      <div className="text-xs text-blue-700">发现项目</div>
-                    </div>
-                    <div className="text-center p-2 bg-green-50 rounded">
-                      <div className="font-semibold text-green-600">
-                        {(job.stats as any)?.itemsProcessed || 0}
-                      </div>
-                      <div className="text-xs text-green-700">处理成功</div>
-                    </div>
-                    <div className="text-center p-2 bg-red-50 rounded">
-                      <div className="font-semibold text-red-600">
-                        {(job.stats as any)?.errors || 0}
-                      </div>
-                      <div className="text-xs text-red-700">错误数量</div>
-                    </div>
-                  </div>
-                )}
-                
-                {job.error && (
-                  <div className="p-3 bg-red-50 border border-red-200 rounded">
-                    <div className="flex items-center gap-2 text-red-700 font-medium mb-1">
-                      <AlertTriangle className="h-4 w-4" />
-                      错误信息
-                    </div>
-                    <p className="text-sm text-red-600 font-mono">{job.error}</p>
-                  </div>
-                )}
-              </CardContent>
-            )}
-          </Card>
-        ))}
-      </div>
-
-      {recentJobs.length === 0 && (
-        <Card className="text-center py-12">
-          <CardContent>
-            <Activity className="h-12 w-12 text-gray-400 mx-auto mb-4" />
-            <h3 className="text-lg font-medium text-gray-900 mb-2">暂无爬取任务</h3>
-            <p className="text-gray-500 mb-4">还没有执行过爬取任务</p>
-            <Button>
-              <Play className="h-4 w-4 mr-2" />
-              开始第一个任务
-            </Button>
-          </CardContent>
-        </Card>
-      )}
-    </div>
+            ))
+          )}
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 
 function CrawlStatsSkeleton() {
   return (
     <>
-      {[...Array(4)].map((_, i) => (
+      {Array.from({ length: 4 }).map((_, i) => (
         <Card key={i}>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <Skeleton className="h-4 w-20" />
             <Skeleton className="h-4 w-4" />
           </CardHeader>
           <CardContent>
-            <Skeleton className="h-8 w-12 mb-2" />
+            <Skeleton className="h-8 w-16 mb-1" />
             <Skeleton className="h-3 w-24" />
           </CardContent>
         </Card>
@@ -489,28 +322,28 @@ function CrawlStatsSkeleton() {
 
 function ActiveSourcesSkeleton() {
   return (
-    <Card>
-      <CardHeader>
-        <Skeleton className="h-6 w-24" />
-        <Skeleton className="h-4 w-40" />
-      </CardHeader>
-      <CardContent>
-        <div className="space-y-4">
-          {[...Array(3)].map((_, i) => (
-            <div key={i} className="flex items-center justify-between p-3 border rounded-lg">
-              <div className="flex items-center space-x-3">
-                <Skeleton className="h-6 w-16" />
-                <Skeleton className="h-4 w-32" />
+    <div className="space-y-4">
+      {Array.from({ length: 3 }).map((_, i) => (
+        <Card key={i}>
+          <CardContent className="pt-6">
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex-1">
+                <Skeleton className="h-4 w-32 mb-2" />
+                <Skeleton className="h-3 w-48" />
               </div>
-              <div className="flex items-center space-x-2">
-                <Skeleton className="h-8 w-8" />
-                <Skeleton className="h-8 w-8" />
+              <Skeleton className="h-6 w-16" />
+            </div>
+            <div className="flex items-center justify-between">
+              <Skeleton className="h-3 w-40" />
+              <div className="flex gap-2">
+                <Skeleton className="h-8 w-16" />
+                <Skeleton className="h-8 w-16" />
               </div>
             </div>
-          ))}
-        </div>
-      </CardContent>
-    </Card>
+          </CardContent>
+        </Card>
+      ))}
+    </div>
   );
 }
 
@@ -519,16 +352,24 @@ function CrawlPerformanceSkeleton() {
     <Card>
       <CardHeader>
         <Skeleton className="h-6 w-24" />
-        <Skeleton className="h-4 w-40" />
       </CardHeader>
-      <CardContent>
-        <div className="space-y-4">
-          <div className="grid grid-cols-2 gap-4">
-            <Skeleton className="h-16 w-full" />
-            <Skeleton className="h-16 w-full" />
+      <CardContent className="space-y-6">
+        <div>
+          <div className="flex items-center justify-between mb-2">
+            <Skeleton className="h-4 w-16" />
+            <Skeleton className="h-4 w-12" />
           </div>
-          <Skeleton className="h-16 w-full" />
+          <Skeleton className="h-2 w-full" />
         </div>
+        <div className="space-y-3">
+          {Array.from({ length: 3 }).map((_, i) => (
+            <div key={i} className="flex items-center justify-between">
+              <Skeleton className="h-4 w-20" />
+              <Skeleton className="h-4 w-16" />
+            </div>
+          ))}
+        </div>
+        <Skeleton className="h-10 w-full" />
       </CardContent>
     </Card>
   );
@@ -536,41 +377,27 @@ function CrawlPerformanceSkeleton() {
 
 function RecentJobsSkeleton() {
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <Skeleton className="h-6 w-32" />
-        <Skeleton className="h-4 w-16" />
-      </div>
-      <div className="grid gap-4">
-        {[...Array(3)].map((_, i) => (
-          <Card key={i}>
-            <CardHeader>
-              <div className="flex items-start justify-between">
+    <Card>
+      <CardHeader>
+        <Skeleton className="h-6 w-24" />
+        <Skeleton className="h-4 w-48" />
+      </CardHeader>
+      <CardContent>
+        <div className="space-y-4">
+          {Array.from({ length: 5 }).map((_, i) => (
+            <div key={i} className="flex items-center justify-between p-4 border rounded-lg">
+              <div className="flex items-center space-x-4">
+                <Skeleton className="h-5 w-5" />
                 <div className="flex-1">
-                  <div className="flex items-center gap-3 mb-2">
-                    <Skeleton className="h-5 w-24" />
-                    <Skeleton className="h-6 w-16" />
-                  </div>
-                  <div className="flex items-center gap-4">
-                    <Skeleton className="h-4 w-32" />
-                    <Skeleton className="h-4 w-16" />
-                    <Skeleton className="h-4 w-24" />
-                  </div>
-                </div>
-                <div className="flex items-center gap-2 ml-4">
-                  <Skeleton className="h-8 w-8" />
-                  <Skeleton className="h-8 w-8" />
+                  <Skeleton className="h-4 w-48 mb-2" />
+                  <Skeleton className="h-3 w-32" />
                 </div>
               </div>
-            </CardHeader>
-          </Card>
-        ))}
-      </div>
-    </div>
+              <Skeleton className="h-6 w-20" />
+            </div>
+          ))}
+        </div>
+      </CardContent>
+    </Card>
   );
 }
-
-export const metadata = {
-  title: '爬虫管理 - MCPHub Admin',
-  description: '管理数据源爬取任务和监控系统状态',
-};

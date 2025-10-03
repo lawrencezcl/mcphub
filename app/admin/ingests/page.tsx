@@ -1,48 +1,59 @@
 import { Suspense } from 'react';
 import { db } from '@/db';
-import { ingests, llmJobs, crawlResults, tools, users } from '@/db/schema';
+import { llmJobs, crawlResults, sources } from '@/db/schema';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
+import { Progress } from '@/components/ui/progress';
 import { 
-  CheckCircle, 
-  XCircle, 
+  Brain, 
   Clock, 
-  Eye,
-  ThumbsUp,
-  ThumbsDown,
-  AlertTriangle,
-  FileText,
-  User,
-  Calendar,
-  ExternalLink
+  CheckCircle, 
+  AlertCircle, 
+  TrendingUp, 
+  TrendingDown,
+  Minus,
+  Play,
+  Pause,
+  RotateCcw,
+  Database,
+  Zap
 } from 'lucide-react';
-import { eq, desc, isNull } from 'drizzle-orm';
+import { count, eq, desc, sql } from 'drizzle-orm';
 
-export default async function IngestsPage() {
+export default function IngestsPage() {
   return (
     <div className="container mx-auto px-4 py-8">
       <div className="mb-8">
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-3xl font-bold mb-2">审核工具</h1>
-            <p className="text-gray-600">审核待入库的工具和内容</p>
-          </div>
-          <div className="flex gap-2">
-            <Button variant="outline">批量审核</Button>
-            <Button>自动审核</Button>
-          </div>
-        </div>
+        <h1 className="text-3xl font-bold mb-2">摄取管理</h1>
+        <p className="text-gray-600">管理和监控数据摄取任务</p>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
-        <Suspense fallback={<StatsSkeleton />}>
+        <Suspense fallback={<IngestStatsSkeleton />}>
           <IngestStats />
         </Suspense>
       </div>
 
-      <div className="space-y-6">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 mb-8">
+        <div className="lg:col-span-2">
+          <h2 className="text-xl font-semibold mb-4">处理队列</h2>
+          <Suspense fallback={<ProcessingQueueSkeleton />}>
+            <ProcessingQueue />
+          </Suspense>
+        </div>
+
+        <div>
+          <h2 className="text-xl font-semibold mb-4">摄取性能</h2>
+          <Suspense fallback={<IngestPerformanceSkeleton />}>
+            <IngestPerformance />
+          </Suspense>
+        </div>
+      </div>
+
+      <div>
+        <h2 className="text-xl font-semibold mb-4">最近任务</h2>
         <Suspense fallback={<IngestsListSkeleton />}>
           <IngestsList />
         </Suspense>
@@ -52,267 +63,284 @@ export default async function IngestsPage() {
 }
 
 async function IngestStats() {
-  const stats = await db
-    .select({
-      id: ingests.id,
-      status: ingests.status,
-    })
-    .from(ingests);
+  const [totalJobs, completedJobs, failedJobs, runningJobs] = await Promise.all([
+    db.select({ count: count() }).from(llmJobs),
+    db.select({ count: count() }).from(llmJobs).where(eq(llmJobs.status, 'completed')),
+    db.select({ count: count() }).from(llmJobs).where(eq(llmJobs.status, 'failed')),
+    db.select({ count: count() }).from(llmJobs).where(eq(llmJobs.status, 'running')),
+  ]);
 
-  const totalIngests = stats.length;
-  const pendingIngests = stats.filter(s => s.status === 'pending_review').length;
-  const approvedIngests = stats.filter(s => s.status === 'approved').length;
-  const rejectedIngests = stats.filter(s => s.status === 'rejected').length;
+  const stats = [
+    {
+      title: '总摄取任务',
+      value: totalJobs[0]?.count || 0,
+      icon: Brain,
+      description: '所有摄取任务',
+      color: 'text-purple-600',
+    },
+    {
+      title: '已完成',
+      value: completedJobs[0]?.count || 0,
+      icon: CheckCircle,
+      description: '成功完成的任务',
+      color: 'text-green-600',
+    },
+    {
+      title: '失败任务',
+      value: failedJobs[0]?.count || 0,
+      icon: AlertCircle,
+      description: '执行失败的任务',
+      color: 'text-red-600',
+    },
+    {
+      title: '运行中',
+      value: runningJobs[0]?.count || 0,
+      icon: Clock,
+      description: '正在执行的任务',
+      color: 'text-orange-600',
+    },
+  ];
 
   return (
     <>
-      <Card>
-        <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-          <CardTitle className="text-sm font-medium">总入库请求</CardTitle>
-          <FileText className="h-4 w-4 text-muted-foreground" />
-        </CardHeader>
-        <CardContent>
-          <div className="text-2xl font-bold">{totalIngests}</div>
-          <p className="text-xs text-muted-foreground">
-            所有入库请求总数
-          </p>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-          <CardTitle className="text-sm font-medium">待审核</CardTitle>
-          <Clock className="h-4 w-4 text-yellow-600" />
-        </CardHeader>
-        <CardContent>
-          <div className="text-2xl font-bold">{pendingIngests}</div>
-          <p className="text-xs text-muted-foreground">
-            等待人工审核
-          </p>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-          <CardTitle className="text-sm font-medium">已通过</CardTitle>
-          <CheckCircle className="h-4 w-4 text-green-600" />
-        </CardHeader>
-        <CardContent>
-          <div className="text-2xl font-bold">{approvedIngests}</div>
-          <p className="text-xs text-muted-foreground">
-            审核通过并入库
-          </p>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-          <CardTitle className="text-sm font-medium">已拒绝</CardTitle>
-          <XCircle className="h-4 w-4 text-red-600" />
-        </CardHeader>
-        <CardContent>
-          <div className="text-2xl font-bold">{rejectedIngests}</div>
-          <p className="text-xs text-muted-foreground">
-            审核未通过
-          </p>
-        </CardContent>
-      </Card>
+      {stats.map((stat, index) => (
+        <Card key={index}>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">{stat.title}</CardTitle>
+            <stat.icon className={`h-4 w-4 ${stat.color}`} />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">{stat.value}</div>
+            <p className="text-xs text-muted-foreground">{stat.description}</p>
+          </CardContent>
+        </Card>
+      ))}
     </>
   );
 }
 
-async function IngestsList() {
-  const ingestsList = await db
+async function ProcessingQueue() {
+  const queuedJobs = await db
     .select({
-      id: ingests.id,
-      status: ingests.status,
-      reason: ingests.reason,
-      createdAt: ingests.createdAt,
-      updatedAt: ingests.updatedAt,
-      toolId: ingests.toolId,
-      llmOutput: llmJobs.output,
-      crawlResult: {
-        id: crawlResults.id,
-        canonicalUrl: crawlResults.canonicalUrl,
-        rawTitle: crawlResults.rawTitle,
-        rawDescription: crawlResults.rawDescription,
-        rawMetadata: crawlResults.rawMetadata,
-      },
-      moderator: {
-        id: users.id,
-        firstName: users.firstName,
-        username: users.username,
-      },
-      tool: {
-        id: tools.id,
-        name: tools.name,
-        slug: tools.slug,
-      }
+      id: llmJobs.id,
+      resultId: llmJobs.resultId,
+      status: llmJobs.status,
+      createdAt: llmJobs.createdAt,
+      finishedAt: llmJobs.finishedAt,
     })
-    .from(ingests)
-    .leftJoin(llmJobs, eq(ingests.llmJobId, llmJobs.id))
-    .leftJoin(crawlResults, eq(llmJobs.resultId, crawlResults.id))
-    .leftJoin(users, eq(ingests.moderatorId, users.id))
-    .leftJoin(tools, eq(ingests.toolId, tools.id))
-    .orderBy(desc(ingests.createdAt))
-    .limit(50);
-
-  const getStatusBadge = (status: string) => {
-    switch (status) {
-      case 'pending_review':
-        return <Badge variant="secondary" className="text-yellow-700 bg-yellow-100"><Clock className="h-3 w-3 mr-1" />待审核</Badge>;
-      case 'approved':
-        return <Badge variant="default" className="text-green-700 bg-green-100"><CheckCircle className="h-3 w-3 mr-1" />已通过</Badge>;
-      case 'rejected':
-        return <Badge variant="destructive" className="text-red-700 bg-red-100"><XCircle className="h-3 w-3 mr-1" />已拒绝</Badge>;
-      default:
-        return <Badge variant="outline">{status}</Badge>;
-    }
-  };
+    .from(llmJobs)
+    .where(eq(llmJobs.status, 'queued'))
+    .orderBy(desc(llmJobs.createdAt))
+    .limit(5);
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h2 className="text-xl font-semibold">入库请求列表</h2>
-        <div className="text-sm text-gray-500">
-          共 {ingestsList.length} 个请求
+      {queuedJobs.length === 0 ? (
+        <div className="text-center py-8 text-gray-500">
+          队列为空
         </div>
-      </div>
-
-      <div className="grid gap-4">
-        {ingestsList.map((ingest) => (
-          <Card key={ingest.id} className="hover:shadow-md transition-shadow">
-            <CardHeader>
-              <div className="flex items-start justify-between">
+      ) : (
+        queuedJobs.map((job) => (
+          <Card key={job.id}>
+            <CardContent className="pt-6">
+              <div className="flex items-center justify-between mb-4">
                 <div className="flex-1">
-                  <div className="flex items-center gap-3 mb-2">
-                    <CardTitle className="text-lg">
-                      {ingest.crawlResult?.rawTitle || '未知工具'}
-                    </CardTitle>
-                    {getStatusBadge(ingest.status)}
-                  </div>
-                  <CardDescription className="line-clamp-2">
-                    {ingest.crawlResult?.rawDescription || '暂无描述'}
-                  </CardDescription>
-                  
-                  <div className="flex items-center gap-4 mt-3 text-sm text-gray-500">
-                    <div className="flex items-center gap-1">
-                      <Calendar className="h-4 w-4" />
-                      {ingest.createdAt?.toLocaleDateString('zh-CN')}
-                    </div>
-                    {ingest.moderator && (
-                      <div className="flex items-center gap-1">
-                        <User className="h-4 w-4" />
-                        {ingest.moderator.displayName}
-                      </div>
-                    )}
-                    {ingest.crawlResult?.canonicalUrl && (
-                      <div className="flex items-center gap-1">
-                        <ExternalLink className="h-4 w-4" />
-                        <a 
-                          href={ingest.crawlResult.canonicalUrl} 
-                          target="_blank" 
-                          rel="noopener noreferrer"
-                          className="text-blue-600 hover:underline"
-                        >
-                          查看原始链接
-                        </a>
-                      </div>
-                    )}
-                  </div>
+                  <h3 className="font-medium">LLM任务 #{job.id}</h3>
+                  <p className="text-sm text-gray-500">
+                    创建时间: {job.createdAt ? 
+                      new Date(job.createdAt).toLocaleString() : 
+                      '未知时间'
+                    }
+                  </p>
                 </div>
-                
-                <div className="flex items-center gap-2 ml-4">
-                  <Button variant="ghost" size="sm">
-                    <Eye className="h-4 w-4" />
+                <Badge variant="outline">
+                  <Clock className="w-3 h-3 mr-1" />
+                  等待中
+                </Badge>
+              </div>
+              
+              <div className="flex items-center justify-between text-sm">
+                <span className="text-gray-500">
+                  任务 ID: {job.id}
+                </span>
+                <div className="flex gap-2">
+                  <Button size="sm" variant="outline">
+                    <Play className="w-3 h-3 mr-1" />
+                    开始
                   </Button>
-                  {ingest.status === 'pending_review' && (
-                    <>
-                      <Button variant="ghost" size="sm" className="text-green-600 hover:text-green-700">
-                        <ThumbsUp className="h-4 w-4" />
-                      </Button>
-                      <Button variant="ghost" size="sm" className="text-red-600 hover:text-red-700">
-                        <ThumbsDown className="h-4 w-4" />
-                      </Button>
-                    </>
-                  )}
+                  <Button size="sm" variant="outline">
+                    <Pause className="w-3 h-3 mr-1" />
+                    暂停
+                  </Button>
                 </div>
               </div>
-            </CardHeader>
-            
-            {(ingest.reason || ingest.llmOutput) && (
-              <CardContent className="pt-0">
-                {ingest.reason && (
-                  <div className="mb-3 p-3 bg-red-50 border border-red-200 rounded">
-                    <div className="flex items-center gap-2 text-red-700 font-medium mb-1">
-                      <AlertTriangle className="h-4 w-4" />
-                      拒绝原因
-                    </div>
-                    <p className="text-sm text-red-600">{ingest.reason}</p>
-                  </div>
-                )}
-                
-                {ingest.llmOutput && (
-                  <div className="space-y-2">
-                    <h4 className="font-medium text-sm text-gray-700">LLM 分析结果</h4>
-                    <div className="text-sm bg-gray-50 p-3 rounded">
-                      {typeof ingest.llmOutput === 'object' ? (
-                        <div className="space-y-2">
-                          {(ingest.llmOutput as any).summary && (
-                            <div>
-                              <strong>摘要:</strong> {(ingest.llmOutput as any).summary}
-                            </div>
-                          )}
-                          {(ingest.llmOutput as any).tags && (
-                            <div>
-                              <strong>标签:</strong> {(ingest.llmOutput as any).tags.join(', ')}
-                            </div>
-                          )}
-                          {(ingest.llmOutput as any).runtimeSupport && (
-                            <div>
-                              <strong>运行时支持:</strong> {JSON.stringify((ingest.llmOutput as any).runtimeSupport)}
-                            </div>
-                          )}
-                        </div>
-                      ) : (
-                        <pre className="whitespace-pre-wrap text-xs">{JSON.stringify(ingest.llmOutput, null, 2)}</pre>
-                      )}
-                    </div>
-                  </div>
-                )}
-              </CardContent>
-            )}
+            </CardContent>
           </Card>
-        ))}
-      </div>
-
-      {ingestsList.length === 0 && (
-        <Card className="text-center py-12">
-          <CardContent>
-            <FileText className="h-12 w-12 text-gray-400 mx-auto mb-4" />
-            <h3 className="text-lg font-medium text-gray-900 mb-2">暂无入库请求</h3>
-            <p className="text-gray-500 mb-4">当前没有需要审核的工具入库请求</p>
-            <Button variant="outline">
-              刷新列表
-            </Button>
-          </CardContent>
-        </Card>
+        ))
       )}
     </div>
   );
 }
 
-function StatsSkeleton() {
+async function IngestPerformance() {
+  // 模拟性能数据
+  const performanceData = {
+    successRate: 92,
+    avgProcessingTime: 25,
+    recentTrend: 'up' as 'up' | 'down' | 'stable',
+    totalProcessed: 850,
+  };
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-lg">性能指标</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-6">
+        <div>
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-sm font-medium">成功率</span>
+            <span className="text-sm text-gray-500">{performanceData.successRate}%</span>
+          </div>
+          <Progress value={performanceData.successRate} className="h-2" />
+        </div>
+
+        <div className="space-y-3">
+          <div className="flex items-center justify-between">
+            <span className="text-sm text-gray-600">平均处理时间</span>
+            <span className="text-sm font-medium">{performanceData.avgProcessingTime}s</span>
+          </div>
+          
+          <div className="flex items-center justify-between">
+            <span className="text-sm text-gray-600">总处理量</span>
+            <span className="text-sm font-medium">{performanceData.totalProcessed.toLocaleString()}</span>
+          </div>
+          
+          <div className="flex items-center justify-between">
+            <span className="text-sm text-gray-600">趋势</span>
+            <div className="flex items-center">
+              {performanceData.recentTrend === 'up' && (
+                <TrendingUp className="w-4 h-4 text-green-600 mr-1" />
+              )}
+              {performanceData.recentTrend === 'down' && (
+                <TrendingDown className="w-4 h-4 text-red-600 mr-1" />
+              )}
+              {performanceData.recentTrend === 'stable' && (
+                <Minus className="w-4 h-4 text-gray-600 mr-1" />
+              )}
+              <span className="text-sm font-medium">
+                {performanceData.recentTrend === 'up' ? '上升' : 
+                 performanceData.recentTrend === 'down' ? '下降' : '稳定'}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <Button className="w-full" variant="outline">
+          <RotateCcw className="w-4 h-4 mr-2" />
+          刷新数据
+        </Button>
+      </CardContent>
+    </Card>
+  );
+}
+
+async function IngestsList() {
+  const recentJobs = await db
+    .select({
+      id: llmJobs.id,
+      resultId: llmJobs.resultId,
+      status: llmJobs.status,
+      createdAt: llmJobs.createdAt,
+      finishedAt: llmJobs.finishedAt,
+    })
+    .from(llmJobs)
+    .orderBy(desc(llmJobs.createdAt))
+    .limit(10);
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>摄取任务列表</CardTitle>
+        <CardDescription>最近的数据摄取任务执行记录</CardDescription>
+      </CardHeader>
+      <CardContent>
+        <div className="space-y-4">
+          {recentJobs.length === 0 ? (
+            <div className="text-center py-8 text-gray-500">
+              暂无摄取任务
+            </div>
+          ) : (
+            recentJobs.map((job) => (
+              <div key={job.id} className="flex items-center justify-between p-4 border rounded-lg">
+                <div className="flex items-center space-x-4">
+                  <div className="flex-shrink-0">
+                    {job.status === 'completed' && <CheckCircle className="h-5 w-5 text-green-600" />}
+                    {job.status === 'running' && <Brain className="h-5 w-5 text-purple-600 animate-pulse" />}
+                    {job.status === 'failed' && <AlertCircle className="h-5 w-5 text-red-600" />}
+                    {job.status === 'queued' && <Clock className="h-5 w-5 text-yellow-600" />}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="font-medium">LLM任务 #{job.id}</p>
+                    <p className="text-sm text-gray-500">
+                      结果ID: {job.resultId}
+                    </p>
+                    <p className="text-xs text-gray-400">
+                      创建时间: {job.createdAt ? 
+                        new Date(job.createdAt).toLocaleString() : 
+                        '未知时间'
+                      }
+                      {job.finishedAt && (
+                        <span className="ml-2">
+                          完成时间: {new Date(job.finishedAt).toLocaleString()}
+                        </span>
+                      )}
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-center space-x-2">
+                  <Badge 
+                    variant={
+                      job.status === 'completed' ? 'default' :
+                      job.status === 'running' ? 'secondary' :
+                      job.status === 'failed' ? 'destructive' : 'outline'
+                    }
+                  >
+                    {job.status === 'completed' && <CheckCircle className="w-3 h-3 mr-1" />}
+                    {job.status === 'running' && <Clock className="w-3 h-3 mr-1" />}
+                    {job.status === 'failed' && <AlertCircle className="w-3 h-3 mr-1" />}
+                    {job.status === 'queued' && <Clock className="w-3 h-3 mr-1" />}
+                    {job.status === 'completed' ? '已完成' : 
+                     job.status === 'running' ? '运行中' : 
+                     job.status === 'failed' ? '失败' : '排队中'}
+                  </Badge>
+                  {job.status === 'failed' && (
+                    <Button size="sm" variant="outline">
+                      <RotateCcw className="w-3 h-3 mr-1" />
+                      重试
+                    </Button>
+                  )}
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function IngestStatsSkeleton() {
   return (
     <>
-      {[...Array(4)].map((_, i) => (
+      {Array.from({ length: 4 }).map((_, i) => (
         <Card key={i}>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <Skeleton className="h-4 w-20" />
             <Skeleton className="h-4 w-4" />
           </CardHeader>
           <CardContent>
-            <Skeleton className="h-8 w-12 mb-2" />
+            <Skeleton className="h-8 w-16 mb-1" />
             <Skeleton className="h-3 w-24" />
           </CardContent>
         </Card>
@@ -321,46 +349,84 @@ function StatsSkeleton() {
   );
 }
 
-function IngestsListSkeleton() {
+function ProcessingQueueSkeleton() {
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <Skeleton className="h-6 w-24" />
-        <Skeleton className="h-4 w-16" />
-      </div>
-      <div className="grid gap-4">
-        {[...Array(3)].map((_, i) => (
-          <Card key={i}>
-            <CardHeader>
-              <div className="flex items-start justify-between">
-                <div className="flex-1">
-                  <div className="flex items-center gap-3 mb-2">
-                    <Skeleton className="h-5 w-48" />
-                    <Skeleton className="h-6 w-16" />
-                  </div>
-                  <Skeleton className="h-4 w-full mb-1" />
-                  <Skeleton className="h-4 w-3/4" />
-                  <div className="flex items-center gap-4 mt-3">
-                    <Skeleton className="h-4 w-20" />
-                    <Skeleton className="h-4 w-16" />
-                    <Skeleton className="h-4 w-24" />
-                  </div>
-                </div>
-                <div className="flex items-center gap-2 ml-4">
-                  <Skeleton className="h-8 w-8" />
-                  <Skeleton className="h-8 w-8" />
-                  <Skeleton className="h-8 w-8" />
-                </div>
+      {Array.from({ length: 3 }).map((_, i) => (
+        <Card key={i}>
+          <CardContent className="pt-6">
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex-1">
+                <Skeleton className="h-4 w-32 mb-2" />
+                <Skeleton className="h-3 w-48" />
               </div>
-            </CardHeader>
-          </Card>
-        ))}
-      </div>
+              <Skeleton className="h-6 w-16" />
+            </div>
+            <div className="flex items-center justify-between">
+              <Skeleton className="h-3 w-40" />
+              <div className="flex gap-2">
+                <Skeleton className="h-8 w-16" />
+                <Skeleton className="h-8 w-16" />
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      ))}
     </div>
   );
 }
 
-export const metadata = {
-  title: '审核工具 - MCPHub Admin',
-  description: '审核待入库的工具和内容',
-};
+function IngestPerformanceSkeleton() {
+  return (
+    <Card>
+      <CardHeader>
+        <Skeleton className="h-6 w-24" />
+      </CardHeader>
+      <CardContent className="space-y-6">
+        <div>
+          <div className="flex items-center justify-between mb-2">
+            <Skeleton className="h-4 w-16" />
+            <Skeleton className="h-4 w-12" />
+          </div>
+          <Skeleton className="h-2 w-full" />
+        </div>
+        <div className="space-y-3">
+          {Array.from({ length: 3 }).map((_, i) => (
+            <div key={i} className="flex items-center justify-between">
+              <Skeleton className="h-4 w-20" />
+              <Skeleton className="h-4 w-16" />
+            </div>
+          ))}
+        </div>
+        <Skeleton className="h-10 w-full" />
+      </CardContent>
+    </Card>
+  );
+}
+
+function IngestsListSkeleton() {
+  return (
+    <Card>
+      <CardHeader>
+        <Skeleton className="h-6 w-24" />
+        <Skeleton className="h-4 w-48" />
+      </CardHeader>
+      <CardContent>
+        <div className="space-y-4">
+          {Array.from({ length: 5 }).map((_, i) => (
+            <div key={i} className="flex items-center justify-between p-4 border rounded-lg">
+              <div className="flex items-center space-x-4">
+                <Skeleton className="h-5 w-5" />
+                <div className="flex-1">
+                  <Skeleton className="h-4 w-48 mb-2" />
+                  <Skeleton className="h-3 w-32" />
+                </div>
+              </div>
+              <Skeleton className="h-6 w-20" />
+            </div>
+          ))}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}

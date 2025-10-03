@@ -1,6 +1,11 @@
-import Link from 'next/link';
+import { Suspense } from 'react';
 import { db } from '@/db';
 import { tags } from '@/db/schema';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Badge } from '@/components/ui/badge';
+import { Skeleton } from '@/components/ui/skeleton';
+import Link from 'next/link';
+import { Tag, Hash } from 'lucide-react';
 
 export const metadata = {
   title: '标签 - MCPHub',
@@ -8,40 +13,86 @@ export const metadata = {
 };
 
 export default async function TagsPage() {
-  const list = await db.select({ slug: tags.slug, name: tags.name, color: tags.color }).from(tags);
-
   return (
     <div className="container mx-auto px-4 py-8">
       <div className="mb-8">
         <h1 className="text-3xl font-bold mb-2">工具标签</h1>
-        <p className="text-gray-600">按标签浏览与筛选 MCP 工具</p>
+        <p className="text-gray-600">
+          通过标签快速找到具有特定功能或特征的 AI 工具
+        </p>
       </div>
 
-      {list.length === 0 ? (
-        <div className="text-center py-12">
-          <p className="text-gray-600 text-lg mb-4">暂无标签</p>
-          <p className="text-gray-500">稍后再试，或前往工具列表进行搜索</p>
-          <div className="mt-6">
-            <Link href="/tools" className="inline-flex items-center px-4 py-2 rounded-md bg-black text-white hover:bg-gray-800">
-              浏览所有工具
-            </Link>
-          </div>
-        </div>
-      ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          {list.map((t) => (
-            <Link
-              key={t.slug}
-              href={`/tools?tag=${encodeURIComponent(t.slug)}`}
-              className="border rounded-lg p-4 hover:bg-gray-50 transition"
-              style={t.color ? { borderColor: t.color } : undefined}
-            >
-              <div className="font-medium">{t.name}</div>
-              <div className="text-sm text-gray-500">点击查看该标签下的工具</div>
-            </Link>
-          ))}
-        </div>
-      )}
+      <Suspense fallback={<TagsListSkeleton />}>
+        <TagsList />
+      </Suspense>
+    </div>
+  );
+}
+
+async function TagsList() {
+  const list = await db
+    .select({
+      id: tags.id,
+      name: tags.name,
+      slug: tags.slug,
+      color: tags.color,
+    })
+    .from(tags);
+
+  return (
+    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 sm:gap-5 lg:gap-6">
+      {list.map((tag) => (
+        <Link key={tag.id} href={`/tools?tag=${tag.slug}`}>
+          <Card className="hover:shadow-lg transition-shadow cursor-pointer h-full">
+            <CardHeader>
+              <div className="flex items-center gap-3">
+                <div 
+                  className="w-10 h-10 rounded-lg flex items-center justify-center"
+                  style={{ backgroundColor: tag.color || '#f3f4f6' }}
+                >
+                  <Tag className="w-5 h-5 text-white" />
+                </div>
+                <div className="flex-1">
+                  <CardTitle className="text-lg">{tag.name}</CardTitle>
+                </div>
+              </div>
+            </CardHeader>
+            <CardContent>
+              <CardDescription className="text-sm text-gray-600 mb-4">
+                暂无描述
+              </CardDescription>
+              <div className="flex items-center justify-between">
+                <Badge variant="secondary" className="text-xs">
+                  <Hash className="w-3 h-3 mr-1" />
+                  {tag.slug}
+                </Badge>
+              </div>
+            </CardContent>
+          </Card>
+        </Link>
+      ))}
+    </div>
+  );
+}
+
+function TagsListSkeleton() {
+  return (
+    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 sm:gap-5 lg:gap-6">
+      {Array.from({ length: 12 }).map((_, i) => (
+        <Card key={i} className="h-full">
+          <CardHeader>
+            <div className="flex items-center gap-3">
+              <Skeleton className="w-10 h-10 rounded-lg" />
+              <Skeleton className="h-6 w-32" />
+            </div>
+          </CardHeader>
+          <CardContent>
+            <Skeleton className="h-4 w-full mb-2" />
+            <Skeleton className="h-4 w-3/4 mb-4" />
+            <Skeleton className="h-6 w-20" />
+          </CardContent>
+        </Card>
+      ))}
     </div>
   );
 }

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { db } from '@/src/db';
-import { tools, categories, tags, toolTags, toolCategories } from '@/src/db/schema';
+import { db } from '@/db';
+import { tools, categories, tags, toolTags, toolCategories } from '@/db/schema';
 import { eq, ilike, or, and, desc, sql } from 'drizzle-orm';
 
 export const runtime = 'edge';

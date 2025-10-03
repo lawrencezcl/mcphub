@@ -11,10 +11,11 @@ import { Button } from '@/components/ui/button';
 import { eq, desc, asc, and, or, ilike, sql } from 'drizzle-orm';
 
 interface ToolsPageProps {
-  searchParams: Record<string, string | string[] | undefined>;
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
 }
 
 export default async function ToolsPage({ searchParams }: ToolsPageProps) {
+  const resolvedSearchParams = await searchParams;
   return (
     <div className="container mx-auto px-3 sm:px-4 py-6 sm:py-8">
       <div className="mb-6 sm:mb-8">
@@ -29,7 +30,7 @@ export default async function ToolsPage({ searchParams }: ToolsPageProps) {
       </Suspense>
 
       <Suspense fallback={<ToolsGridSkeleton />}>
-        <ToolsGrid searchParams={searchParams} />
+        <ToolsGrid searchParams={resolvedSearchParams} />
       </Suspense>
     </div>
   );
@@ -148,7 +149,7 @@ async function ToolsGrid({ searchParams }: { searchParams: Record<string, any> }
         </p>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 sm:gap-4 lg:gap-6">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 sm:gap-5 lg:gap-6">
         {toolsResult.map((tool) => {
           const normalizeDate = (value: unknown): string => {
             if (typeof value === 'string') return value;
@@ -160,7 +161,15 @@ async function ToolsGrid({ searchParams }: { searchParams: Record<string, any> }
             <ToolCard
               key={tool.id}
               tool={{
-                ...tool,
+                id: tool.id.toString(),
+                slug: tool.slug,
+                name: tool.name,
+                description: tool.description || '',
+                author: tool.author || undefined,
+                logoUrl: tool.logoUrl || undefined,
+                repoUrl: tool.repoUrl || undefined,
+                homepageUrl: tool.homepageUrl || undefined,
+                runtimeSupport: tool.runtimeSupport || undefined,
                 popularityScore: tool.popularityScore ?? 0,
                 createdAt: normalizeDate(tool.createdAt),
                 updatedAt: normalizeDate(tool.updatedAt),
@@ -199,20 +208,28 @@ function FiltersSkeleton() {
 
 function ToolsGridSkeleton() {
   return (
-    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-      {Array.from({ length: 9 }).map((_, i) => (
-        <div key={i} className="border rounded-lg p-6 space-y-4">
+    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 sm:gap-5 lg:gap-6">
+      {Array.from({ length: 12 }).map((_, i) => (
+        <div key={i} className="border rounded-2xl p-4 sm:p-5 lg:p-6 space-y-4 bg-white/80 backdrop-blur-sm shadow-lg">
           <div className="flex items-center space-x-3">
-            <Skeleton className="w-12 h-12 rounded-lg" />
-            <div className="space-y-2">
-              <Skeleton className="h-5 w-32" />
-              <Skeleton className="h-4 w-24" />
+            <Skeleton className="w-10 h-10 sm:w-12 sm:h-12 lg:w-14 lg:h-14 rounded-xl" />
+            <div className="space-y-2 flex-1">
+              <Skeleton className="h-5 w-3/4" />
+              <Skeleton className="h-4 w-1/2" />
             </div>
           </div>
           <Skeleton className="h-16 w-full" />
           <div className="flex gap-2">
-            <Skeleton className="h-6 w-16" />
-            <Skeleton className="h-6 w-20" />
+            <Skeleton className="h-6 w-16 rounded-full" />
+            <Skeleton className="h-6 w-20 rounded-full" />
+          </div>
+          <div className="flex justify-between items-center pt-2 border-t">
+            <div className="flex gap-3">
+              <Skeleton className="h-4 w-8" />
+              <Skeleton className="h-4 w-8" />
+              <Skeleton className="h-4 w-8" />
+            </div>
+            <Skeleton className="h-8 w-20 rounded-xl" />
           </div>
         </div>
       ))}

@@ -1,3 +1,5 @@
+import Link from 'next/link';
+
 export default function HomePage() {
   return (
     <div className="flex flex-col items-center justify-center min-h-screen p-8">
@@ -7,7 +9,7 @@ export default function HomePage() {
       </p>
       <div className="text-center">
         <p className="text-sm text-gray-500">
-          请访问 <a href="/tools" className="text-blue-600 hover:underline">/tools</a> 查看工具列表
+          请访问 <Link href="/tools" className="text-blue-600 hover:underline">/tools</Link> 查看工具列表
         </p>
       </div>
     </div>

@@ -1,11 +1,23 @@
-# MCPHub：MCP 工具导航网站设计方案
+# MCPHub 设计文档
 
 ## 概述
-- 目标：构建一个面向开发者的 MCP（Model Context Protocol）工具导航网站，聚合、检索、评测与分发 MCP 工具生态，方便开发者发现、筛选和快速集成。
-- 托管：部署在 Vercel，充分利用其 Edge Runtime 与全球 CDN 分发能力。
-- 数据库：使用 Neon PostgreSQL（Serverless），通过 Edge 兼容驱动在边缘节点访问数据库。
-- 本文档：需求拆解、技术架构、数据模型、API 设计、页面规划、性能与安全策略、里程碑与风险评估。
- - 自动化内容来源：内置爬虫与 LLM 聚合管线，定期抓取与结构化工具信息。
+MCPHub 是一个专注于 Model Context Protocol (MCP) 工具的导航与发现平台。目标是为开发者提供一个集中的地方来发现、评估和使用 MCP 生态系统中的各种工具。
+
+### 核心目标
+- **工具发现**：帮助开发者快速找到适合的 MCP 工具
+- **质量保证**：通过社区评价和专业审核确保工具质量
+- **生态建设**：促进 MCP 工具生态系统的发展
+- **知识分享**：提供工具使用指南和最佳实践
+
+### 技术选型
+- **框架**：Next.js 15 App Router
+- **UI 库**：Tailwind CSS + shadcn/ui
+- **字体**：Geist Sans + Geist Mono
+- **托管平台**：Vercel（Edge Runtime 优先）
+- **数据库**：Neon PostgreSQL（支持 Edge 连接）
+- **ORM**：Drizzle ORM
+- **AI 服务**：DeepSeek API
+- **内容自动化**：爬虫 + LLM 聚合处理
 
 ## 目标与非目标
 - 目标
@@ -80,171 +92,198 @@
   - 自动部署：连接 Git 仓库；设置环境变量（Production/Preview）。
   - 构建输出：默认 Next.js 构建；确保路由配置与 ISR 正常。
 
-## 数据库设计（Neon PostgreSQL）
+### 数据库表结构
 
-### 表结构
-- `tools`（工具主表）
-  - `id` BIGSERIAL PK
-  - `slug` TEXT UNIQUE NOT NULL
-  - `name` TEXT NOT NULL
-  - `description` TEXT
-  - `repo_url` TEXT
-  - `homepage_url` TEXT
-  - `package_name` TEXT（如 npm 包名）
-  - `install_cmd` TEXT（安装命令，如 `npm i @foo/bar`）
-  - `runtime_support` JSONB（如 `{ node: true, edge: true, browser: false }`）
-  - `author` TEXT
-  - `license` TEXT
-  - `logo_url` TEXT
-  - `version` TEXT
-  - `status` TEXT（`approved` | `pending` | `rejected` | `archived`）
-  - `created_at` TIMESTAMPTZ DEFAULT now()
-  - `updated_at` TIMESTAMPTZ DEFAULT now()
-  - `source_score` INT DEFAULT 0（来源可信度与质量评分）
-  - `last_crawled_at` TIMESTAMPTZ NULL
-
-- `categories`
-  - `id` BIGSERIAL PK
-  - `name` TEXT UNIQUE NOT NULL
-  - `slug` TEXT UNIQUE NOT NULL
-  - `created_at` TIMESTAMPTZ DEFAULT now()
-
-- `tags`
-  - `id` BIGSERIAL PK
-  - `name` TEXT UNIQUE NOT NULL
-  - `slug` TEXT UNIQUE NOT NULL
-
-- `tool_tags`（多对多）
-  - `tool_id` BIGINT FK -> tools(id)
-  - `tag_id` BIGINT FK -> tags(id)
-  - PK(`tool_id`, `tag_id`)
-
-- `tool_categories`（多对一/多对多均可，首期一个主分类 + 可选多分类）
-  - `tool_id` BIGINT FK -> tools(id)
-  - `category_id` BIGINT FK -> categories(id)
-  - PK(`tool_id`, `category_id`)
-
-- `users`（可选，若需要登录与互动）
-  - `id` BIGSERIAL PK
-  - `provider` TEXT（github/google/email）
-  - `provider_id` TEXT UNIQUE
-  - `display_name` TEXT
-  - `avatar_url` TEXT
-  - `role` TEXT（`user` | `admin`）
-  - `created_at` TIMESTAMPTZ DEFAULT now()
-
-- `favorites`
-  - `user_id` BIGINT FK -> users(id)
-  - `tool_id` BIGINT FK -> tools(id)
-  - PK(`user_id`, `tool_id`)
-  - `created_at` TIMESTAMPTZ DEFAULT now()
-
-- `likes`
-  - `user_id` BIGINT FK -> users(id)
-  - `tool_id` BIGINT FK -> tools(id)
-  - PK(`user_id`, `tool_id`)
-  - `created_at` TIMESTAMPTZ DEFAULT now()
-
-- `views`
-  - `tool_id` BIGINT FK -> tools(id)
-  - `date` DATE
-  - `count` INT
-  - PK(`tool_id`, `date`)
-
-- `submissions`（用户提交）
-  - `id` BIGSERIAL PK
-  - `submitter_email` TEXT
-  - `payload` JSONB（提交内容快照）
-  - `status` TEXT（`pending` | `approved` | `rejected`）
-  - `moderator_note` TEXT
-  - `created_at` TIMESTAMPTZ DEFAULT now()
-  - `updated_at` TIMESTAMPTZ DEFAULT now()
-
-- `audits`（审计日志）
-  - `id` BIGSERIAL PK
-  - `actor_user_id` BIGINT NULL FK -> users(id)
-  - `action` TEXT（`create_tool`/`update_tool`/`approve`/`reject`/...）
-  - `target_tool_id` BIGINT NULL FK -> tools(id)
-  - `metadata` JSONB
-  - `created_at` TIMESTAMPTZ DEFAULT now()
-
-### 索引与扩展
-- 索引
-  - `tools(slug)` 唯一
-  - `tools(name)` BTREE
-  - `tools USING GIN(to_tsvector('simple', coalesce(name,'') || ' ' || coalesce(description,'')))`（全文）
-  - `tags(slug)`、`categories(slug)` 唯一
-  - `views(tool_id, date)` PK
-- 扩展
-  - `CREATE EXTENSION IF NOT EXISTS pg_trgm;` 模糊搜索支持
-  - `CREATE EXTENSION IF NOT EXISTS pgcrypto;`（如需生成随机 ID/加密）
-  - `CREATE EXTENSION IF NOT EXISTS vector;`（语义检索向量存储）
-
-### 示例 DDL（可根据 ORM 迁移生成）
+#### 核心表
 ```sql
-CREATE TABLE IF NOT EXISTS tools (
+-- 工具表
+CREATE TABLE tools (
   id BIGSERIAL PRIMARY KEY,
   slug TEXT UNIQUE NOT NULL,
   name TEXT NOT NULL,
   description TEXT,
-  repo_url TEXT,
-  homepage_url TEXT,
-  package_name TEXT,
-  install_cmd TEXT,
-  runtime_support JSONB,
   author TEXT,
+  version TEXT,
   license TEXT,
   logo_url TEXT,
-  version TEXT,
-  status TEXT DEFAULT 'pending',
+  repo_url TEXT,
+  homepage_url TEXT,
+  npm_package TEXT,
+  install_command TEXT,
+  usage_example TEXT,
+  runtime_support JSONB, -- {node: boolean, edge: boolean, browser: boolean}
+  detail JSONB, -- 详细信息存储
+  popularity_score INTEGER DEFAULT 0,
+  status TEXT DEFAULT 'pending', -- pending, approved, rejected
   created_at TIMESTAMPTZ DEFAULT now(),
   updated_at TIMESTAMPTZ DEFAULT now()
 );
 
-CREATE TABLE IF NOT EXISTS categories (
+-- 分类表
+CREATE TABLE categories (
   id BIGSERIAL PRIMARY KEY,
   name TEXT UNIQUE NOT NULL,
   slug TEXT UNIQUE NOT NULL,
+  description TEXT,
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
-CREATE TABLE IF NOT EXISTS tags (
+-- 标签表
+CREATE TABLE tags (
   id BIGSERIAL PRIMARY KEY,
   name TEXT UNIQUE NOT NULL,
-  slug TEXT UNIQUE NOT NULL
+  slug TEXT UNIQUE NOT NULL,
+  color TEXT,
+  created_at TIMESTAMPTZ DEFAULT now()
 );
 
-CREATE TABLE IF NOT EXISTS tool_tags (
+-- 工具-标签关联表
+CREATE TABLE tool_tags (
   tool_id BIGINT REFERENCES tools(id) ON DELETE CASCADE,
   tag_id BIGINT REFERENCES tags(id) ON DELETE CASCADE,
   PRIMARY KEY (tool_id, tag_id)
 );
 
-CREATE TABLE IF NOT EXISTS tool_categories (
+-- 工具-分类关联表
+CREATE TABLE tool_categories (
   tool_id BIGINT REFERENCES tools(id) ON DELETE CASCADE,
   category_id BIGINT REFERENCES categories(id) ON DELETE CASCADE,
   PRIMARY KEY (tool_id, category_id)
 );
+```
 
-CREATE TABLE IF NOT EXISTS submissions (
+#### 用户交互表
+```sql
+-- 用户表（简化版）
+CREATE TABLE users (
+  id BIGSERIAL PRIMARY KEY,
+  email TEXT UNIQUE,
+  name TEXT,
+  avatar_url TEXT,
+  github_id TEXT,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- 提交表
+CREATE TABLE submissions (
   id BIGSERIAL PRIMARY KEY,
   submitter_email TEXT,
   payload JSONB,
-  status TEXT DEFAULT 'pending',
+  status TEXT DEFAULT 'pending', -- pending, approved, rejected
   moderator_note TEXT,
   created_at TIMESTAMPTZ DEFAULT now(),
   updated_at TIMESTAMPTZ DEFAULT now()
 );
 
-CREATE TABLE IF NOT EXISTS views (
+-- 统计表
+CREATE TABLE views (
   tool_id BIGINT REFERENCES tools(id) ON DELETE CASCADE,
   date DATE NOT NULL,
   count INT DEFAULT 0,
   PRIMARY KEY (tool_id, date)
 );
 
-CREATE EXTENSION IF NOT EXISTS pg_trgm;
-CREATE EXTENSION IF NOT EXISTS vector;
+CREATE TABLE likes (
+  id BIGSERIAL PRIMARY KEY,
+  tool_id BIGINT REFERENCES tools(id) ON DELETE CASCADE,
+  user_id BIGINT REFERENCES users(id) ON DELETE CASCADE,
+  ip_address INET,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  UNIQUE(tool_id, user_id),
+  UNIQUE(tool_id, ip_address)
+);
+
+CREATE TABLE favorites (
+  id BIGSERIAL PRIMARY KEY,
+  tool_id BIGINT REFERENCES tools(id) ON DELETE CASCADE,
+  user_id BIGINT REFERENCES users(id) ON DELETE CASCADE,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  UNIQUE(tool_id, user_id)
+);
+
+CREATE TABLE shares (
+  id BIGSERIAL PRIMARY KEY,
+  tool_id BIGINT REFERENCES tools(id) ON DELETE CASCADE,
+  platform TEXT, -- twitter, linkedin, etc.
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+```
+
+#### 自动化聚合表
+```sql
+-- 数据源配置
+CREATE TABLE sources (
+  id BIGSERIAL PRIMARY KEY,
+  type TEXT NOT NULL, -- github_topic, npm_query, awesome_list, website
+  identifier TEXT NOT NULL, -- topic名、查询词、URL等
+  enabled BOOLEAN DEFAULT true,
+  config JSONB, -- 额外配置
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- 爬取任务
+CREATE TABLE crawl_jobs (
+  id BIGSERIAL PRIMARY KEY,
+  source_id BIGINT REFERENCES sources(id) ON DELETE CASCADE,
+  status TEXT DEFAULT 'queued', -- queued, running, completed, failed
+  started_at TIMESTAMPTZ,
+  finished_at TIMESTAMPTZ,
+  stats JSONB, -- 统计信息
+  error_message TEXT,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- 爬取结果
+CREATE TABLE crawl_results (
+  id BIGSERIAL PRIMARY KEY,
+  job_id BIGINT REFERENCES crawl_jobs(id) ON DELETE CASCADE,
+  canonical_url TEXT NOT NULL,
+  raw_title TEXT,
+  raw_description TEXT,
+  raw_readme TEXT,
+  raw_metadata JSONB,
+  dedupe_hash TEXT,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- LLM 处理任务
+CREATE TABLE llm_jobs (
+  id BIGSERIAL PRIMARY KEY,
+  result_id BIGINT REFERENCES crawl_results(id) ON DELETE CASCADE,
+  status TEXT DEFAULT 'queued', -- queued, running, completed, failed
+  model TEXT,
+  prompt_version TEXT,
+  output JSONB,
+  error_message TEXT,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  finished_at TIMESTAMPTZ
+);
+
+-- 入库映射
+CREATE TABLE ingests (
+  id BIGSERIAL PRIMARY KEY,
+  tool_id BIGINT REFERENCES tools(id) ON DELETE SET NULL,
+  llm_job_id BIGINT REFERENCES llm_jobs(id) ON DELETE CASCADE,
+  status TEXT DEFAULT 'pending_review', -- pending_review, approved, rejected
+  reason TEXT,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- 审计日志
+CREATE TABLE audit_logs (
+  id BIGSERIAL PRIMARY KEY,
+  table_name TEXT NOT NULL,
+  record_id BIGINT NOT NULL,
+  action TEXT NOT NULL, -- insert, update, delete
+  old_values JSONB,
+  new_values JSONB,
+  user_id BIGINT REFERENCES users(id),
+  ip_address INET,
+  user_agent TEXT,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
 ```
 
 ## API 设计（Edge Route Handlers）

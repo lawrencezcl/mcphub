@@ -78,15 +78,15 @@ export function ToolFilters({ categories, tags }: ToolFiltersProps) {
   };
 
   const handleCategoryChange = (value: string) => {
-    updateURL({ category: value || null });
+    updateURL({ category: value === 'all' ? null : value });
   };
 
   const handleTagChange = (value: string) => {
-    updateURL({ tag: value || null });
+    updateURL({ tag: value === 'all' ? null : value });
   };
 
   const handleRuntimeChange = (value: string) => {
-    updateURL({ runtime: value || null });
+    updateURL({ runtime: value === 'all' ? null : value });
   };
 
   const handleSortChange = (value: string) => {
@@ -138,48 +138,71 @@ export function ToolFilters({ categories, tags }: ToolFiltersProps) {
   ];
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-8">
       {/* 搜索栏 */}
-      <div className="relative" ref={searchInputRef}>
-        <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 h-4 w-4" />
-        <Input
-          type="text"
-          placeholder="搜索工具名称或描述..."
-          value={searchValue}
-          onChange={(e) => handleSearchInputChange(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') {
-              handleSearch();
-              setShowSuggestions(false);
-            }
-          }}
-          className="pl-10 pr-4 py-2 w-full"
-        />
-        {showSuggestions && (
-          <div ref={suggestionsRef}>
-            <SearchSuggestions
-              suggestions={suggestions}
-              isLoading={isSuggestionsLoading}
-              onSelect={handleSuggestionSelect}
-            />
-          </div>
+      <div className="relative max-w-2xl mx-auto">
+        <div className="relative">
+          <Search className="absolute left-4 top-1/2 transform -translate-y-1/2 text-gray-400 h-5 w-5" />
+          <Input
+            ref={searchInputRef}
+            type="text"
+            placeholder="搜索 MCP 工具、功能或用途..."
+            value={searchValue}
+            onChange={(e) => {
+              setSearchValue(e.target.value);
+              setShowSuggestions(true);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                handleSearch();
+                setShowSuggestions(false);
+              }
+            }}
+            onFocus={() => setShowSuggestions(true)}
+            className="pl-12 pr-12 h-14 text-lg border-2 border-gray-200 focus:border-blue-500 rounded-2xl shadow-lg bg-white/80 backdrop-blur-sm transition-all duration-200 hover:shadow-xl focus:shadow-xl"
+          />
+          {searchValue && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                setSearchValue('');
+                setShowSuggestions(false);
+                updateURL({ q: null });
+              }}
+              className="absolute right-3 top-1/2 transform -translate-y-1/2 h-8 w-8 p-0 hover:bg-gray-100 rounded-full"
+            >
+              <X className="h-4 w-4" />
+            </Button>
+          )}
+        </div>
+        
+        {/* 搜索建议 */}
+        {showSuggestions && searchValue && (
+          <SearchSuggestions
+            ref={suggestionsRef}
+            suggestions={suggestions}
+            isLoading={isSuggestionsLoading}
+            onSelect={handleSuggestionSelect}
+            onClose={() => setShowSuggestions(false)}
+          />
         )}
       </div>
 
       {/* 筛选控制栏 */}
-      <div className="flex flex-col sm:flex-row gap-3 sm:gap-4 items-stretch sm:items-center justify-between">
-        <div className="flex flex-wrap items-center gap-2">
+      <div className="flex flex-col sm:flex-row gap-4 items-stretch sm:items-center justify-between bg-white/60 backdrop-blur-sm rounded-2xl p-4 border border-gray-200/50 shadow-sm">
+        <div className="flex flex-wrap items-center gap-3">
           <Button
             variant="outline"
             size="sm"
             onClick={() => setIsFilterOpen(!isFilterOpen)}
-            className="flex items-center gap-2 flex-1 sm:flex-none justify-center sm:justify-start"
+            className="flex items-center gap-2 flex-1 sm:flex-none justify-center sm:justify-start border-2 hover:border-blue-300 transition-colors rounded-xl"
           >
             <SlidersHorizontal className="h-4 w-4" />
             <span className="sm:hidden md:inline">筛选器</span>
             <span className="hidden sm:inline md:hidden">筛选</span>
             {activeFilters.length > 0 && (
-              <Badge variant="secondary" className="ml-1 px-1.5 py-0.5 text-xs">
+              <Badge variant="secondary" className="ml-1 px-2 py-0.5 text-xs bg-blue-100 text-blue-700 rounded-full">
                 {activeFilters.length}
               </Badge>
             )}
@@ -190,18 +213,18 @@ export function ToolFilters({ categories, tags }: ToolFiltersProps) {
               variant="ghost"
               size="sm"
               onClick={clearFilters}
-              className="text-gray-500 hover:text-gray-700 flex-1 sm:flex-none justify-center sm:justify-start"
+              className="text-gray-500 hover:text-gray-700 hover:bg-gray-100 flex-1 sm:flex-none justify-center sm:justify-start rounded-xl"
             >
-              <X className="h-4 w-4 sm:hidden" />
+              <X className="h-4 w-4 sm:mr-2" />
               <span className="hidden sm:inline">清除筛选</span>
             </Button>
           )}
         </div>
 
-        <div className="flex items-center gap-2 w-full sm:w-auto">
-          <Sparkles className="h-4 w-4 text-gray-400 hidden lg:block" />
+        <div className="flex items-center gap-3 w-full sm:w-auto">
+          <Sparkles className="h-4 w-4 text-blue-500 hidden lg:block" />
           <Select value={currentSort} onValueChange={handleSortChange}>
-            <SelectTrigger className="w-full sm:w-[140px] md:w-[160px]">
+            <SelectTrigger className="w-full sm:w-[140px] md:w-[160px] border-2 hover:border-blue-300 rounded-xl">
               <SelectValue placeholder="排序方式" />
             </SelectTrigger>
             <SelectContent>
@@ -217,16 +240,19 @@ export function ToolFilters({ categories, tags }: ToolFiltersProps) {
 
       {/* 筛选面板 */}
       {isFilterOpen && (
-        <div className="bg-gray-50 rounded-lg p-3 sm:p-4 border border-gray-200">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3 sm:gap-4">
-            <div className="space-y-2">
-              <label className="text-sm font-medium text-gray-700">分类</label>
-              <Select value={currentCategory || ''} onValueChange={handleCategoryChange}>
-                <SelectTrigger className="w-full">
+        <div className="bg-gradient-to-r from-blue-50/50 to-purple-50/50 backdrop-blur-sm rounded-2xl p-6 border border-gray-200/50 shadow-lg">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            <div className="space-y-3">
+              <label className="text-sm font-semibold text-gray-800 flex items-center gap-2">
+                <div className="w-2 h-2 bg-blue-500 rounded-full"></div>
+                分类
+              </label>
+              <Select value={currentCategory || 'all'} onValueChange={handleCategoryChange}>
+                <SelectTrigger className="w-full border-2 hover:border-blue-300 rounded-xl bg-white/80">
                   <SelectValue placeholder="选择分类" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="">全部分类</SelectItem>
+                  <SelectItem value="all">全部分类</SelectItem>
                   {categories.map((category) => (
                     <SelectItem key={category.slug} value={category.slug}>
                       {category.name}
@@ -236,14 +262,17 @@ export function ToolFilters({ categories, tags }: ToolFiltersProps) {
               </Select>
             </div>
 
-            <div className="space-y-2">
-              <label className="text-sm font-medium text-gray-700">标签</label>
-              <Select value={currentTag || ''} onValueChange={handleTagChange}>
-                <SelectTrigger className="w-full">
+            <div className="space-y-3">
+              <label className="text-sm font-semibold text-gray-800 flex items-center gap-2">
+                <div className="w-2 h-2 bg-purple-500 rounded-full"></div>
+                标签
+              </label>
+              <Select value={currentTag || 'all'} onValueChange={handleTagChange}>
+                <SelectTrigger className="w-full border-2 hover:border-blue-300 rounded-xl bg-white/80">
                   <SelectValue placeholder="选择标签" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="">全部标签</SelectItem>
+                  <SelectItem value="all">全部标签</SelectItem>
                   {tags.map((tag) => (
                     <SelectItem key={tag.slug} value={tag.slug}>
                       {tag.name}
@@ -253,14 +282,17 @@ export function ToolFilters({ categories, tags }: ToolFiltersProps) {
               </Select>
             </div>
 
-            <div className="space-y-2">
-              <label className="text-sm font-medium text-gray-700">运行时</label>
-              <Select value={currentRuntime || ''} onValueChange={handleRuntimeChange}>
-                <SelectTrigger className="w-full">
+            <div className="space-y-3">
+              <label className="text-sm font-semibold text-gray-800 flex items-center gap-2">
+                <div className="w-2 h-2 bg-green-500 rounded-full"></div>
+                运行时
+              </label>
+              <Select value={currentRuntime || 'all'} onValueChange={handleRuntimeChange}>
+                <SelectTrigger className="w-full border-2 hover:border-blue-300 rounded-xl bg-white/80">
                   <SelectValue placeholder="选择运行时" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="">全部运行时</SelectItem>
+                  <SelectItem value="all">全部运行时</SelectItem>
                   {runtimeOptions.map((option) => (
                     <SelectItem key={option.value} value={option.value}>
                       {option.label}

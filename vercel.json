@@ -17,13 +17,7 @@
       "schedule": "0 */6 * * *"
     }
   ],
-  "env": {
-    "DATABASE_URL": "@database_url",
-    "ADMIN_TOKEN": "@admin_token",
-    "DEEPSEEK_API_KEY": "@deepseek_api_key",
-    "GITHUB_TOKEN": "@github_token",
-    "CRON_SECRET": "@cron_secret"
-  },
+
   "headers": [
     {
       "source": "/api/(.*)",

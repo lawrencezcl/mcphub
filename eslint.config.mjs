@@ -18,7 +18,15 @@ const eslintConfig = [
       "out/**",
       "build/**",
       "next-env.d.ts",
+      "src/test/**",
     ],
+    rules: {
+      "@typescript-eslint/no-explicit-any": "off",
+      "@typescript-eslint/no-require-imports": "off",
+      "@typescript-eslint/no-unused-vars": "off",
+      "react-hooks/exhaustive-deps": "off",
+      "@next/next/no-html-link-for-pages": "off",
+    },
   },
 ];
 

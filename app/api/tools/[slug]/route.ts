@@ -8,13 +8,13 @@ import { eq } from 'drizzle-orm';
 
 export async function GET(
   request: NextRequest,
-  { params }: { params: { slug: string } }
+  { params }: { params: Promise<{ slug: string }> }
 ) {
   const requestId = crypto.randomUUID();
   const startTime = Date.now();
 
   try {
-    const { slug } = params;
+    const { slug } = await params;
 
     if (!slug) {
       throw new ApiError(ErrorCode.VALIDATION_ERROR, '工具标识符不能为空', 400);

@@ -12,11 +12,12 @@ import { ExternalLink, Github, Download, Calendar, User, FileText, Package } fro
 import { eq } from 'drizzle-orm';
 
 interface ToolDetailPageProps {
-  params: { slug: string };
+  params: Promise<{ slug: string }>;
 }
 
 export default async function ToolDetailPage({ params }: ToolDetailPageProps) {
-  const tool = await getToolBySlug(params.slug);
+  const { slug } = await params;
+  const tool = await getToolBySlug(slug);
 
   if (!tool) {
     notFound();
@@ -286,7 +287,8 @@ async function getToolBySlug(slug: string) {
 }
 
 export async function generateMetadata({ params }: ToolDetailPageProps): Promise<Metadata> {
-  const tool = await getToolBySlug(params.slug);
+  const { slug } = await params;
+  const tool = await getToolBySlug(slug);
 
   if (!tool) {
     return {

@@ -1,258 +1,1225 @@
-# MCPHub 系统设计（最小颗粒度）
+# MCPHub 系统设计（最新架构）
 
-本系统设计基于 `design.md` 的总体方案，进一步细化到可落地实现的最小颗粒度，涵盖组件划分、目录结构、数据模型（Drizzle/Neon）、接口契约（Zod）、运行时选择（Edge/Node）、抓取与 LLM 聚合流水线、缓存与 SEO、认证与限流、安全与合规，以及部署与观测方案。
+本系统设计基于当前实际实现，详细描述了 MCPHub 的完整架构，包括前端组件、API 设计、数据模型、抓取流水线、AI 处理、缓存策略、认证授权、性能优化等核心模块。
 
 ## 总体架构
-- 前端交付：Next.js 14（App Router），主要页面 SSR/SSG + ISR；UI 使用 Tailwind + shadcn/ui。
-- 后端运行时：
-  - Edge Runtime（高频读）：公共页面与只读 API，走 Vercel Edge 网络与 CDN，降低 TTFB。
-  - Node.js Runtime（写/重任务）：爬虫抓取、LLM 处理、管理员操作 API，便于使用丰富依赖与更稳定的网络特性。
-- 数据层：Neon PostgreSQL（Serverless），HTTP 驱动 `@neondatabase/serverless` + Drizzle ORM。
-- 缓存层：Vercel Edge Cache（`Cache-Control`）、ISR（页面级）、SWR（客户端）、可选 Upstash Redis 作为限流/任务状态缓存。
-- 定时任务：Vercel Cron 触发 `/api/cron/crawl`，控制并发与预算，定期聚合数据。
 
-## 模块设计（详细）
+### 技术栈
+- **前端框架**: Next.js 15 (App Router) + React 18
+- **UI 组件**: Tailwind CSS + shadcn/ui + Framer Motion
+- **运行时环境**: 
+  - Edge Runtime: 高频读取 API 和公共页面
+  - Node.js Runtime: 数据写入、AI 处理、管理操作
+- **数据库**: Neon PostgreSQL (Serverless) + Drizzle ORM
+- **AI 服务**: DeepSeek API (可扩展多 Provider)
+- **部署平台**: Vercel (Edge Network + Serverless Functions)
+- **监控分析**: Vercel Analytics + Sentry
+- **缓存策略**: Vercel Edge Cache + ISR + SWR
 
-### 前端模块（App Router）
-- 页面职责
-  - `/` 首页：展示精选与热门工具；接入 `GET /api/tools?sort=popular&page=1`；骨架屏；Edge SSR。
-  - `/tools` 列表：支持 `q/tag/category/sort/order/page/pageSize`；URL 作为单一状态源；Edge SSR + ISR；分页组件。
-  - `/tools/[slug]` 详情：展示结构化元数据、安装命令、示例代码段、分享卡片；Edge SSR + ISR。
-  - `/categories/[slug]`、`/tags/[slug]`：复用列表逻辑；预取筛选数据；Edge SSR。
-  - `/submit` 提交页：表单校验（Zod），POST 提交到 Node 路由；成功后 toast 并引导返回列表。
-  - `/admin/*` 管理后台：Node SSR；鉴权保护；包含源管理、抓取任务查看、LLM 入库审核、工具编辑。
-- 组件划分
-  - `NavBar`、`Footer`、`SearchBar`、`ToolCard`、`ToolFilters`、`Pagination`、`Badge`、`Skeleton`、`Breadcrumbs`。
-  - `AdminTable`（表格与筛选）、`DiffViewer`（原始 vs LLM 输出差异）、`SourceForm`、`IngestReview`。
-- 状态管理
-  - 以 URL 查询参数为主，通过 React Server Components 读取参数；客户端轻量状态（SWR 用于局部刷新）。
-  - 对分页与筛选采用 `useRouter().push` 更新 URL；服务端重新渲染避免 CSR 负担。
-- 性能与可访问性
-  - 优先 SSR 与边缘渲染；图片使用 `next/image`；图标按需导入。
-  - 语义标签与 ARIA 属性；键盘导航；色彩对比度校验。
-  - 代码分割：管理后台单独 chunk；详情页示例代码块懒加载。
-- 错误边界
-  - 页面级 `error.tsx` 捕获渲染错误；展示重试按钮与反馈入口。
-  - API 错误转为用户友好提示，避免泄漏内部信息。
+### 架构原则
+1. **边缘优先**: 公共内容通过 Edge Runtime 提供，降低 TTFB
+2. **渐进增强**: 基础功能 SSR，交互功能 CSR
+3. **类型安全**: 全栈 TypeScript + Zod 验证
+4. **性能优化**: 智能缓存 + 代码分割 + 图片优化
+5. **可观测性**: 结构化日志 + 性能监控 + 错误追踪
 
-### API 模块（Edge/Node 路由）
-- Edge 路由（只读）
-  - 输入：`PaginationQuery`（Zod）；输出：`{ items: Tool[], page, pageSize, total? }`。
-  - 缓存：`Cache-Control: public, s-maxage=60, stale-while-revalidate=300`。
-  - 错误码：400（参数错误）、404（不存在）、500（服务器错误）。
-- Node 路由（写/重任务）
-  - 认证：`ADMIN_TOKEN` 或 OAuth；返回 401/403。
-  - 幂等：对重复提交（依据 `slug`/指纹）返回 200 并附上现有记录。
-  - 限流：提交与管理操作 1 分钟内不超过 N 次；超过返回 429。
-- 契约示例
-  - `POST /api/submissions`
-    - Body：`SubmissionInput`
-    - 响应：`{ id, status: 'pending' }` 或错误码。
-  - `POST /api/admin/crawl/run`
-    - Body：`{ sourceId?: number }`
-    - 响应：`{ jobId, status: 'queued' }`。
-  - `POST /api/admin/llm/process`
-    - Body：`{ resultId: number }`
-    - 响应：`{ llmJobId, status: 'queued'|'completed', output? }`。
+## 前端架构
 
-### 数据模块（Drizzle/Neon）
-- 关系与约束
-  - `tool_tags`, `tool_categories` 外键级联删除；保证数据一致性。
-  - `crawl_results.dedupe_hash` 唯一约束避免重复插入；如冲突则合并策略。
-  - `ingests.tool_id` 可空，表示待审核；批准后设置引用并更新工具状态。
-- 迁移策略
-  - 使用 `drizzle-kit` 生成 SQL；在 CI/CD 或部署前执行；版本化管理。
-  - 对扩展（`pg_trgm`, `vector`）在迁移中声明 `CREATE EXTENSION IF NOT EXISTS`。
-- 数据一致性
-  - 管理员编辑工具时，更新 `updated_at`；视图计数按日聚合入 `views`。
-  - 审核批准后触发重建向量嵌入（可选）。
-
-### 抓取模块（Crawler）
-- 源管理（`sources`）
-  - 类型：`github_topic`, `npm_query`, `awesome_list`, `website`。
-  - 字段：`identifier`（topic 名/查询词/URL）；`enabled` 控制是否参与定时任务。
-- 任务编排（`crawl_jobs`）
-  - 流程：`queued -> running -> completed|failed`；记录 `stats`（数量/耗时/错误）。
-  - 并发：每次 Cron 限并发 3~5（依 Vercel 路由执行时间）；对大源分页分批执行。
-- 抓取实现
-  - GitHub：优先使用 API（搜索 repos with topics/keywords）；读取 `README` via contents API；尊重速率限制与 ETag。
-  - NPM：使用 npm registry 搜索端点与 package metadata；读取 readme 字段；过滤非 MCP。
-  - Website：仅 allowlist 域名；使用 `undici` + `cheerio` 解析；遵守 `robots.txt`。
-- 解析器（`parser.ts`）
-  - 识别安装命令：匹配 `npm i`, `pnpm add`, `yarn add`、`npx` 等模式。
-  - 兼容性信号：README 中提到 `Edge Runtime`、Next.js App Router；源码包含 `export const runtime = 'edge'`；package 元数据标记。
-  - 许可证：README 徽章或 `package.json.license`；仓库 `LICENSE` 文件。
-  - 输出：规范化对象 `{ name, description, repoUrl, homepageUrl, packageName, installCmd, runtimeSupport, author, license, logoUrl, version }`。
-- 去重（`dedupe.ts`）
-  - 哈希输入：`canonicalUrl || repoUrl || homepageUrl` + `packageName`；
-  - 算法：`sha256`；写入 `crawl_results.dedupe_hash`；
-  - 冲突：若已存在，比较更新鲜度（内容变化/时间），决定是否覆盖或追加版本信息。
-- 失败处理
-  - 分类错误码：网络、解析、速率限制、源格式变更；
-  - 重试策略：指数退避；超过阈值标记 `failed` 并报警。
-
-### LLM 模块
-- 客户端与 Provider
-  - 支持多 Provider；以 `AI_PROVIDER_API_KEY` 切换；超时与重试控制；
-  - 输出结构化 JSON，避免自由文本；长度裁剪，字段校验。
-- 提示词与 Schema（示例）
-  - 输入：`raw_title`, `raw_description`, `raw_readme`, `raw_metadata`。
-  - 目标：生成 `summary`（<=300 汉字）、`tags[]`（<=10）、`runtimeSupport{node,edge,browser}`、`category`、`risks`（可选）。
-  - 校验：Zod 校验字段与长度；拒绝无效输出并记录失败原因。
-- 成本控制
-  - 以 `dedupe_hash` 作为缓存键；若内容相同不重复调用；批处理控制并发（如 2~3）。
-  - 优先处理热门或高质量来源；低质量源降级为人工审核。
-- 安全
-  - 屏蔽危险链接与脚本；对摘要进行 XSS 过滤；
-  - 仅保存必要信息；对 Provider 错误进行掩码处理。
-
-### 审核与入库模块
-- 审核 UI
-  - 列表：`ingests` 状态筛选；详情：原始数据与 LLM 输出对比；
-  - 操作：`approve`/`reject`，填写 `reason`；批量操作（可选）。
-- 入库逻辑
-  - 批准：将数据写入 `tools`，设置 `status='approved'`，更新 `source_score`；
-  - 触发：`revalidatePath('/tools')`、详情页与相关分类/标签页；（在 Node 路由内触发）。
-  - 审计：记录管理员 ID 与操作；可查询历史。
-
-### 搜索模块
-- 关键字检索
-  - SQL：`to_tsvector(simple, name || ' ' || description) @@ plainto_tsquery(q)`；
-  - 排序：匹配度 + 人气（views/likes/favorites）加权；分页。
-- 模糊检索
-  - `pg_trgm`：`similarity(name, q) > threshold`；与全文结果合并去重。
-- 语义检索（可选）
-  - 嵌入：从摘要生成向量写入 `embeddings`；
-  - 查询：按余弦距离排序；与全文结果融合（学习权重）。
-
-### 缓存模块
-- 边缘缓存
-  - API 响应设置 `s-maxage` 与 `stale-while-revalidate`；
-  - 页面 ISR：列表与详情设置 `revalidate`（120~300s）。
-- 失效与再生成
-  - 管理员发布/编辑、审核批准后，主动触发相关路径与标签失效；
-  - 列表、详情、分类/标签页统一纳入 `tools` 标签管理（Next `revalidateTag`）。
-
-### 认证与权限模块
-- 管理员认证
-  - 首期：`ADMIN_TOKEN`（Bearer）；中间件校验；
-  - 后续：NextAuth + GitHub OAuth；角色：`admin`、`editor`、`viewer`。
-- 权限控制
-  - 仅管理员访问 `/admin/*` 与相关 API；公共写操作需登录或严格限流。
-
-### 限流模块
-- 实现
-  - Upstash Redis（优先）或内存令牌桶（Edge 生命周期）；
-  - 键规则：`route:ip` 或 `userId`；配额按路由定义（提交/点赞更严格）。
-- 响应
-  - 超限返回 429 与 `Retry-After`；记录日志用于分析。
-
-### 日志与观测模块
-- 结构化日志
-  - 字段：`timestamp`, `route`, `runtime`, `requestId`, `userId?`, `status`, `latency`, `error?`；
-  - 级别：info/warn/error；Node 路由更详细。
-- 指标
-  - API 成功率、P95 延迟；抓取与 LLM 成功率与耗时；
-  - 页面 Web Vitals（FCP/LCP/CLS/TTFB）；Vercel Analytics 集成。
-- 报警
-  - 抓取失败率阈值、LLM 超时、数据库错误；邮件或 Slack 通知。
-
-### SEO/OG 模块
-- SEO
-  - `metadata` 完整：title/description/openGraph/twitter；站点地图；robots。
-  - 面包屑与语义 HTML；canonical 链接。
-- 动态 OG 图
-  - `/og/[slug]`：Edge 路由生成（satori/canvas）；包含名称、标签、logo；
-  - 缓存与失效：与详情页一致。
-
-### 部署与配置模块
-- Vercel 项目
-  - 环境：Production/Preview；配置环境变量（`DATABASE_URL`, `ADMIN_TOKEN`, `AI_PROVIDER_API_KEY`）。
-  - Cron：配置每日/每周任务；预览环境可关闭或降频。
-- 构建
-  - Next 自动构建；确保 Node 路由未引入与 Edge 不兼容依赖；
-  - 预览链接供审核与测试。
-
-### 测试与质量保障模块
-- 单元测试
-  - 解析器与去重：输入样本与预期输出；
-  - 验证器（Zod）：边界值与非法输入。
-- 集成测试
-  - API 路由：只读与写操作；模拟数据库（测试库或事务回滚）。
-- 端到端测试
-  - 页面流程：搜索、筛选、详情、提交；
-  - 管理后台：审核入库流程；
-- 任务测试
-  - Cron 路由：在预览环境以小样本执行；防止长时间阻塞。
-
-### 性能预算与优化细则
-- TTFB（Edge）：< 250ms；API P95：< 500ms；Node 写操作 < 800ms。
-- 资源：图片懒加载；组件按需加载；
-- SQL：使用索引；分页避免 `OFFSET` 大量；可用 keyset 分页。
-
-### 风险与回滚策略
-- 功能开关（feature flags）：对自动聚合与语义检索可配置开关。
-- 蓝绿发布：通过 Preview 验证后再 Promote；如故障回滚到上一个稳定版本。
-- 手动兜底：自动抓取故障时，允许手工提交与人工维护热门条目。
-
-## 目录结构（建议）
+### 页面结构
 ```
-mcphub/
-  app/
-    layout.tsx
-    page.tsx                  # 首页（Edge）
-    tools/
-      page.tsx                # 列表页（Edge）
-      [slug]/page.tsx         # 详情页（Edge）
-    categories/[slug]/page.tsx
-    tags/[slug]/page.tsx
-    submit/page.tsx           # 提交页（Node 或 Edge）
-    admin/                    # 管理后台（Node）
-      page.tsx                # 权限保护
-      sources/page.tsx
-      crawl/page.tsx
-      ingests/page.tsx
-    og/[slug]/route.ts        # 动态 OG 图（Edge）
-    api/
-      tools/route.ts          # GET 列表（Edge）
-      tools/[slug]/route.ts   # GET 详情（Edge）
-      search/route.ts         # GET 搜索（Edge）
-      categories/route.ts     # GET（Edge）
-      tags/route.ts           # GET（Edge）
-      submissions/route.ts    # POST 提交（Node）
-      admin/
-        tools/[id]/route.ts   # PATCH 编辑（Node）
-        tools/approve/route.ts
-        tools/reject/route.ts
-        sources/route.ts      # GET/POST 源（Node）
-        crawl/run/route.ts    # 手动触发（Node）
-        crawl/jobs/route.ts   # GET 任务（Node）
-        llm/process/route.ts  # POST LLM（Node）
-      cron/
-        crawl/route.ts        # 定时抓取入口（Node）
-  src/
-    db/
-      schema.ts               # Drizzle 表定义
-      index.ts                # Drizzle 连接（neon）
-      migrations/             # drizzle-kit 迁移输出
-    lib/
-      auth.ts                 # 管理员认证（token/OAuth）
-      rate-limit.ts           # 限流器（Upstash/自研）
-      cache.ts                # Revalidate 工具
-      validators.ts           # Zod Schema
-      search.ts               # SQL 全文/向量检索封装
-      crawl/
-        sources.ts            # 源配置与发现策略
-        fetchers/
-          github.ts           # GitHub 抓取
-          npm.ts              # NPM 抓取
-          website.ts          # 通用站点抓取
-        parser.ts             # README/package.json 解析
-        dedupe.ts             # 去重指纹
-      llm/
-        client.ts             # Provider 客户端
-        prompts.ts            # 提示词模板
-        process.ts            # LLM 处理逻辑
+app/
+├── (public)/                 # 公共页面组
+│   ├── page.tsx              # 首页 - 展示热门工具
+│   ├── tools/                # 工具相关页面
+│   │   ├── page.tsx          # 工具列表页
+│   │   └── [slug]/           # 工具详情页
+│   ├── categories/           # 分类页面
+│   ├── tags/                 # 标签页面
+│   └── submit/               # 工具提交页
+├── admin/                    # 管理后台
+│   ├── layout.tsx            # 管理后台布局
+│   ├── page.tsx              # 仪表板
+│   ├── tools/                # 工具管理
+│   ├── submissions/          # 提交审核
+│   ├── sources/              # 数据源管理
+│   └── analytics/            # 数据分析
+├── api/                      # API 路由
+│   ├── tools/                # 工具相关 API
+│   ├── admin/                # 管理 API
+│   ├── cron/                 # 定时任务
+│   └── og/                   # OG 图片生成
+└── globals.css               # 全局样式
+```
+
+### 核心组件
+```typescript
+// 基础组件
+components/
+├── ui/                       # shadcn/ui 基础组件
+├── layout/                   # 布局组件
+│   ├── NavBar.tsx           # 导航栏
+│   ├── Footer.tsx           # 页脚
+│   └── Sidebar.tsx          # 侧边栏
+├── tools/                    # 工具相关组件
+│   ├── ToolCard.tsx         # 工具卡片
+│   ├── ToolList.tsx         # 工具列表
+│   ├── ToolFilters.tsx      # 筛选器
+│   └── ToolDetail.tsx       # 工具详情
+├── forms/                    # 表单组件
+│   ├── SubmitForm.tsx       # 提交表单
+│   └── SearchForm.tsx       # 搜索表单
+└── admin/                    # 管理组件
+    ├── AdminTable.tsx       # 管理表格
+    ├── ReviewPanel.tsx      # 审核面板
+    └── SourceManager.tsx    # 数据源管理
+```
+
+### 状态管理
+- **URL 状态**: 搜索、筛选、分页参数通过 URL 管理
+- **服务端状态**: SWR 管理 API 数据缓存和同步
+- **客户端状态**: React useState/useReducer 管理 UI 状态
+- **全局状态**: Context API 管理主题、用户信息等
+
+### 性能优化
+- **代码分割**: 动态导入管理后台和详情页组件
+- **图片优化**: next/image 自动优化和懒加载
+- **字体优化**: next/font 优化字体加载
+- **预加载**: 关键页面和 API 预加载
+- **缓存策略**: 静态资源长期缓存，API 响应智能缓存
+
+## API 架构
+
+### 路由设计
+```typescript
+// Edge Runtime API (只读操作)
+/api/tools                    # 工具列表 (GET)
+/api/tools/[slug]            # 工具详情 (GET)
+/api/categories              # 分类列表 (GET)
+/api/tags                    # 标签列表 (GET)
+/api/search                  # 搜索接口 (GET)
+/api/stats                   # 统计数据 (GET)
+
+// Node.js Runtime API (写操作)
+/api/submissions             # 提交工具 (POST)
+/api/admin/tools             # 工具管理 (POST/PUT/DELETE)
+/api/admin/submissions       # 提交审核 (POST/PUT)
+/api/admin/sources           # 数据源管理 (POST/PUT/DELETE)
+/api/admin/crawl             # 抓取任务 (POST)
+/api/admin/llm               # AI 处理 (POST)
+/api/cron/crawl              # 定时抓取 (POST)
+/api/cron/cleanup            # 数据清理 (POST)
+```
+
+### 数据验证
+```typescript
+// 使用 Zod 进行类型安全的数据验证
+export const ToolCreateSchema = z.object({
+  name: z.string().min(1).max(200),
+  description: z.string().max(1000).optional(),
+  repoUrl: z.string().url().optional(),
+  homepageUrl: z.string().url().optional(),
+  packageName: z.string().optional(),
+  installCmd: z.string().optional(),
+  runtimeSupport: z.object({
+    node: z.boolean().optional(),
+    edge: z.boolean().optional(),
+    browser: z.boolean().optional(),
+  }).optional(),
+  // ... 详细字段定义
+});
+```
+
+### 错误处理
+```typescript
+// 统一错误响应格式
+export interface ApiResponse<T = any> {
+  success: boolean;
+  data?: T;
+  error?: {
+    code: string;
+    message: string;
+    details?: any;
+  };
+  meta?: {
+    pagination?: PaginationMeta;
+    timing?: TimingMeta;
+  };
+}
+
+// 错误码定义
+export enum ErrorCode {
+  VALIDATION_ERROR = 'VALIDATION_ERROR',
+  NOT_FOUND = 'NOT_FOUND',
+  UNAUTHORIZED = 'UNAUTHORIZED',
+  FORBIDDEN = 'FORBIDDEN',
+  RATE_LIMITED = 'RATE_LIMITED',
+  CONFLICT = 'CONFLICT',
+  INTERNAL_ERROR = 'INTERNAL_ERROR',
+  SERVICE_UNAVAILABLE = 'SERVICE_UNAVAILABLE',
+}
+```
+
+## 数据架构
+
+### 数据库设计
+```sql
+-- 核心业务表
+tools                        # 工具主表
+├── id (bigint, PK)         # 主键
+├── slug (text, unique)     # URL 友好标识
+├── name (text)             # 工具名称
+├── description (text)      # 描述
+├── detail (jsonb)          # 详细信息 (结构化)
+├── repo_url (text)         # 仓库地址
+├── homepage_url (text)     # 主页地址
+├── package_name (text)     # 包名
+├── install_cmd (text)      # 安装命令
+├── runtime_support (jsonb) # 运行时支持
+├── author (text)           # 作者
+├── license (text)          # 许可证
+├── logo_url (text)         # Logo 地址
+├── version (text)          # 版本
+├── status (enum)           # 状态: pending/approved/rejected/archived
+├── source_score (int)      # 来源评分
+├── popularity_score (int)  # 人气评分
+├── quality_score (decimal) # 质量评分
+├── created_at (timestamp)  # 创建时间
+├── updated_at (timestamp)  # 更新时间
+└── last_crawled_at (timestamp) # 最后抓取时间
+
+-- 分类和标签
+categories                   # 分类表
+├── id (bigint, PK)
+├── name (text, unique)
+├── slug (text, unique)
+├── description (text)
+├── icon (text)
+└── created_at (timestamp)
+
+tags                        # 标签表
+├── id (bigint, PK)
+├── name (text, unique)
+├── slug (text, unique)
+└── color (text)
+
+-- 关联表
+tool_tags                   # 工具-标签关联
+├── tool_id (bigint, FK)
+└── tag_id (bigint, FK)
+
+tool_categories             # 工具-分类关联
+├── tool_id (bigint, FK)
+└── category_id (bigint, FK)
+
+-- 用户和交互
+users                       # 用户表
+├── id (bigint, PK)
+├── telegram_id (bigint)
+├── username (text)
+├── first_name (text)
+├── analytics_opt_in (boolean)
+├── data_retention (text)
+├── last_active (timestamp)
+├── notification_frequency (text)
+├── max_notifications_per_day (int)
+├── created_at (timestamp)
+└── updated_at (timestamp)
+
+submissions                 # 提交表
+├── id (bigint, PK)
+├── submitter_email (text)
+├── payload (jsonb)         # 提交的工具数据
+├── status (enum)           # pending/approved/rejected
+├── moderator_note (text)
+├── moderator_id (bigint, FK)
+├── created_at (timestamp)
+└── updated_at (timestamp)
+
+-- 统计表
+views                       # 浏览统计
+├── tool_id (bigint, FK)
+├── date (date)
+└── count (int)
+
+likes                       # 点赞记录
+├── user_id (bigint, FK)
+├── tool_id (bigint, FK)
+└── created_at (timestamp)
+
+favorites                   # 收藏记录
+├── user_id (bigint, FK)
+├── tool_id (bigint, FK)
+└── created_at (timestamp)
+
+shares                      # 分享记录
+├── id (bigint, PK)
+├── tool_id (bigint, FK)
+├── share_id (text, unique)
+├── platform (enum)        # link/twitter/linkedin/facebook/email/wechat/weibo
+├── user_agent (text)
+├── ip_address (inet)
+└── created_at (timestamp)
+
+-- 数据处理流水线
+sources                     # 数据源配置
+├── id (bigint, PK)
+├── type (enum)             # github_topic/npm_query/awesome_list/website
+├── identifier (text)       # 标识符 (topic名/查询词/URL)
+├── enabled (boolean)       # 是否启用
+├── config (jsonb)          # 配置参数
+├── created_at (timestamp)
+└── updated_at (timestamp)
+
+crawl_jobs                  # 抓取任务
+├── id (bigint, PK)
+├── source_id (bigint, FK)
+├── status (enum)           # queued/running/completed/failed
+├── started_at (timestamp)
+├── finished_at (timestamp)
+├── stats (jsonb)           # 统计信息
+└── error (text)
+
+crawl_results               # 抓取结果
+├── id (bigint, PK)
+├── job_id (bigint, FK)
+├── canonical_url (text)
+├── raw_title (text)
+├── raw_description (text)
+├── raw_readme (text)
+├── raw_metadata (jsonb)
+├── dedupe_hash (text, unique) # 去重哈希
+└── created_at (timestamp)
+
+llm_jobs                    # LLM 处理任务
+├── id (bigint, PK)
+├── result_id (bigint, FK)
+├── status (enum)           # queued/running/completed/failed
+├── model (text)
+├── prompt_version (text)
+├── output (jsonb)          # AI 处理结果
+├── error (text)
+├── created_at (timestamp)
+└── finished_at (timestamp)
+
+ingests                     # 入库审核
+├── id (bigint, PK)
+├── tool_id (bigint, FK)
+├── llm_job_id (bigint, FK)
+├── status (enum)           # pending_review/approved/rejected
+├── reason (text)
+├── moderator_id (bigint, FK)
+├── created_at (timestamp)
+└── updated_at (timestamp)
+
+-- 审计日志
+audit_logs                  # 操作审计
+├── id (bigint, PK)
+├── table_name (text)
+├── record_id (bigint)
+├── action (enum)           # INSERT/UPDATE/DELETE
+├── old_values (jsonb)
+├── new_values (jsonb)
+├── user_id (bigint, FK)
+├── ip_address (inet)
+├── user_agent (text)
+└── created_at (timestamp)
+```
+
+### ORM 配置
+```typescript
+// Drizzle 配置
+export default {
+  schema: './src/db/schema.ts',
+  out: './src/db/migrations',
+  driver: 'pg',
+  dbCredentials: {
+    connectionString: process.env.DATABASE_URL!,
+  },
+  verbose: true,
+  strict: true,
+} satisfies Config;
+
+// 数据库连接
+ const sql = neon(process.env.DATABASE_URL);
+ export const db = drizzle(sql, { schema });
+ ```
+
+## 抓取流水线架构
+
+### 数据源管理
+```typescript
+// 数据源类型定义
+export enum SourceType {
+  GITHUB_TOPIC = 'github_topic',
+  NPM_QUERY = 'npm_query', 
+  AWESOME_LIST = 'awesome_list',
+  WEBSITE = 'website'
+}
+
+// 数据源配置
+interface SourceConfig {
+  github_topic: {
+    topic: string;
+    minStars?: number;
+    language?: string;
+    sort?: 'stars' | 'updated' | 'created';
+  };
+  npm_query: {
+    query: string;
+    scope?: string;
+    keywords?: string[];
+    minDownloads?: number;
+  };
+  awesome_list: {
+    repoUrl: string;
+    section?: string;
+    pattern?: string;
+  };
+  website: {
+    baseUrl: string;
+    selectors: {
+      title: string;
+      description: string;
+      links: string;
+    };
+    pagination?: {
+      nextSelector: string;
+      maxPages: number;
+    };
+  };
+}
+```
+
+### 抓取任务编排
+```typescript
+// 任务状态管理
+export enum CrawlJobStatus {
+  QUEUED = 'queued',
+  RUNNING = 'running', 
+  COMPLETED = 'completed',
+  FAILED = 'failed'
+}
+
+// 抓取统计
+interface CrawlStats {
+  totalItems: number;
+  newItems: number;
+  updatedItems: number;
+  duplicateItems: number;
+  errorItems: number;
+  duration: number;
+  apiCalls: number;
+  rateLimitHits: number;
+}
+
+// 任务执行器
+class CrawlJobExecutor {
+  async execute(job: CrawlJob): Promise<CrawlStats> {
+    const fetcher = this.getFetcher(job.source.type);
+    const results = await fetcher.fetch(job.source);
+    
+    // 解析和去重
+    const parsedResults = await this.parseResults(results);
+    const deduplicatedResults = await this.deduplicateResults(parsedResults);
+    
+    // 保存到数据库
+    await this.saveResults(job.id, deduplicatedResults);
+    
+    return this.generateStats(results, parsedResults, deduplicatedResults);
+  }
+}
+```
+
+### GitHub 抓取实现
+```typescript
+class GitHubFetcher {
+  private client: Octokit;
+  
+  async fetch(source: Source): Promise<RawResult[]> {
+    const config = source.config as SourceConfig['github_topic'];
+    
+    // 搜索仓库
+    const searchQuery = this.buildSearchQuery(config);
+    const repos = await this.searchRepositories(searchQuery);
+    
+    // 获取详细信息
+    const results: RawResult[] = [];
+    for (const repo of repos) {
+      try {
+        const readme = await this.getReadme(repo.owner.login, repo.name);
+        const packageJson = await this.getPackageJson(repo.owner.login, repo.name);
+        
+        results.push({
+          canonicalUrl: repo.html_url,
+          rawTitle: repo.name,
+          rawDescription: repo.description,
+          rawReadme: readme,
+          rawMetadata: {
+            stars: repo.stargazers_count,
+            forks: repo.forks_count,
+            language: repo.language,
+            topics: repo.topics,
+            license: repo.license?.spdx_id,
+            packageJson: packageJson,
+            lastUpdated: repo.updated_at
+          }
+        });
+      } catch (error) {
+        console.error(`Failed to fetch details for ${repo.full_name}:`, error);
+      }
+    }
+    
+    return results;
+  }
+  
+  private buildSearchQuery(config: SourceConfig['github_topic']): string {
+    let query = `topic:${config.topic}`;
+    
+    if (config.minStars) {
+      query += ` stars:>=${config.minStars}`;
+    }
+    
+    if (config.language) {
+      query += ` language:${config.language}`;
+    }
+    
+    // 过滤 MCP 相关
+    query += ' (mcp OR "model context protocol" OR "claude computer use")';
+    
+    return query;
+  }
+}
+```
+
+### NPM 抓取实现
+```typescript
+class NPMFetcher {
+  async fetch(source: Source): Promise<RawResult[]> {
+    const config = source.config as SourceConfig['npm_query'];
+    
+    // 搜索包
+    const searchUrl = this.buildSearchUrl(config);
+    const searchResults = await fetch(searchUrl).then(r => r.json());
+    
+    const results: RawResult[] = [];
+    for (const pkg of searchResults.objects) {
+      try {
+        // 获取包详情
+        const packageData = await this.getPackageDetails(pkg.package.name);
+        
+        // 检查是否为 MCP 工具
+        if (this.isMCPTool(packageData)) {
+          results.push({
+            canonicalUrl: packageData.homepage || packageData.repository?.url,
+            rawTitle: packageData.name,
+            rawDescription: packageData.description,
+            rawReadme: packageData.readme,
+            rawMetadata: {
+              version: packageData.version,
+              keywords: packageData.keywords,
+              license: packageData.license,
+              author: packageData.author,
+              downloads: pkg.package.downloads,
+              repository: packageData.repository,
+              dependencies: packageData.dependencies
+            }
+          });
+        }
+      } catch (error) {
+        console.error(`Failed to fetch package ${pkg.package.name}:`, error);
+      }
+    }
+    
+    return results;
+  }
+  
+  private isMCPTool(packageData: any): boolean {
+    const indicators = [
+      'mcp',
+      'model-context-protocol',
+      'claude-computer-use',
+      '@modelcontextprotocol'
+    ];
+    
+    const searchText = [
+      packageData.name,
+      packageData.description,
+      ...(packageData.keywords || []),
+      packageData.readme
+    ].join(' ').toLowerCase();
+    
+    return indicators.some(indicator => searchText.includes(indicator));
+  }
+}
+```
+
+### 内容解析器
+```typescript
+class ContentParser {
+  parseToolInfo(result: RawResult): ParsedToolInfo {
+    const metadata = result.rawMetadata;
+    
+    return {
+      name: this.extractName(result),
+      description: this.extractDescription(result),
+      repoUrl: this.extractRepoUrl(result),
+      homepageUrl: this.extractHomepageUrl(result),
+      packageName: this.extractPackageName(result),
+      installCmd: this.extractInstallCommand(result),
+      runtimeSupport: this.extractRuntimeSupport(result),
+      author: this.extractAuthor(result),
+      license: this.extractLicense(result),
+      logoUrl: this.extractLogoUrl(result),
+      version: this.extractVersion(result),
+      tags: this.extractTags(result),
+      category: this.extractCategory(result)
+    };
+  }
+  
+  private extractInstallCommand(result: RawResult): string | null {
+    const readme = result.rawReadme || '';
+    const packageJson = result.rawMetadata?.packageJson;
+    
+    // 从 README 中提取安装命令
+    const installPatterns = [
+      /npm install\s+([^\s\n]+)/gi,
+      /yarn add\s+([^\s\n]+)/gi,
+      /pnpm add\s+([^\s\n]+)/gi,
+      /npx\s+([^\s\n]+)/gi
+    ];
+    
+    for (const pattern of installPatterns) {
+      const match = readme.match(pattern);
+      if (match) {
+        return match[0];
+      }
+    }
+    
+    // 从 package.json 推断
+    if (packageJson?.name) {
+      return `npm install ${packageJson.name}`;
+    }
+    
+    return null;
+  }
+  
+  private extractRuntimeSupport(result: RawResult): RuntimeSupport {
+    const readme = result.rawReadme || '';
+    const packageJson = result.rawMetadata?.packageJson;
+    
+    return {
+      node: this.checkNodeSupport(readme, packageJson),
+      edge: this.checkEdgeSupport(readme, packageJson),
+      browser: this.checkBrowserSupport(readme, packageJson)
+    };
+  }
+  
+  private checkEdgeSupport(readme: string, packageJson: any): boolean {
+    const edgeIndicators = [
+      'edge runtime',
+      'vercel edge',
+      'cloudflare workers',
+      'export const runtime = "edge"',
+      'runtime: "edge"'
+    ];
+    
+    const searchText = (readme + JSON.stringify(packageJson || {})).toLowerCase();
+    return edgeIndicators.some(indicator => searchText.includes(indicator));
+  }
+}
+```
+
+### 去重策略
+```typescript
+class DeduplicationService {
+  async deduplicateResults(results: ParsedToolInfo[]): Promise<ParsedToolInfo[]> {
+    const deduplicatedResults: ParsedToolInfo[] = [];
+    const seenHashes = new Set<string>();
+    
+    for (const result of results) {
+      const hash = this.generateDedupeHash(result);
+      
+      if (!seenHashes.has(hash)) {
+        seenHashes.add(hash);
+        deduplicatedResults.push(result);
+      } else {
+        // 检查是否需要更新现有记录
+        await this.handleDuplicate(result, hash);
+      }
+    }
+    
+    return deduplicatedResults;
+  }
+  
+  private generateDedupeHash(result: ParsedToolInfo): string {
+    // 使用多个字段生成唯一标识
+    const identifiers = [
+      result.repoUrl,
+      result.homepageUrl,
+      result.packageName,
+      result.name
+    ].filter(Boolean);
+    
+    const primaryIdentifier = identifiers[0] || result.name;
+    return crypto.createHash('sha256')
+      .update(primaryIdentifier.toLowerCase())
+      .digest('hex');
+  }
+  
+  private async handleDuplicate(result: ParsedToolInfo, hash: string): Promise<void> {
+    // 查找现有记录
+    const existing = await db.select()
+      .from(crawlResults)
+      .where(eq(crawlResults.dedupeHash, hash))
+      .limit(1);
+    
+    if (existing.length > 0) {
+      const existingResult = existing[0];
+      
+      // 比较内容是否有更新
+      if (this.hasContentChanged(existingResult, result)) {
+        // 更新现有记录
+        await db.update(crawlResults)
+          .set({
+            rawTitle: result.name,
+            rawDescription: result.description,
+            rawReadme: result.rawReadme,
+            rawMetadata: result.rawMetadata,
+            updatedAt: new Date()
+          })
+          .where(eq(crawlResults.id, existingResult.id));
+      }
+    }
+  }
+}
+```
+
+## AI 处理架构
+
+### LLM 客户端
+```typescript
+class LLMClient {
+  private provider: AIProvider;
+  
+  constructor(provider: 'deepseek' | 'openai' | 'anthropic' = 'deepseek') {
+    this.provider = this.createProvider(provider);
+  }
+  
+  async processToolInfo(result: CrawlResult): Promise<LLMOutput> {
+    const prompt = this.buildPrompt(result);
+    
+    try {
+      const response = await this.provider.complete({
+        model: 'deepseek-chat',
+        messages: [
+          { role: 'system', content: SYSTEM_PROMPT },
+          { role: 'user', content: prompt }
+        ],
+        temperature: 0.1,
+        max_tokens: 2000
+      });
+      
+      const output = this.parseResponse(response.content);
+      return this.validateOutput(output);
+      
+    } catch (error) {
+      throw new LLMProcessingError(`Failed to process tool info: ${error.message}`);
+    }
+  }
+  
+  private buildPrompt(result: CrawlResult): string {
+    return `
+请分析以下 MCP 工具信息，并生成结构化的输出：
+
+工具名称: ${result.rawTitle}
+描述: ${result.rawDescription}
+README: ${result.rawReadme?.substring(0, 4000)}
+元数据: ${JSON.stringify(result.rawMetadata, null, 2)}
+
+请提供以下信息的 JSON 格式输出：
+1. summary: 工具的简洁描述（不超过300字）
+2. tags: 相关标签数组（最多10个）
+3. category: 主要分类
+4. runtimeSupport: 运行时支持情况 {node, edge, browser}
+5. qualityScore: 质量评分（0-100）
+6. risks: 潜在风险或注意事项（可选）
+    `;
+  }
+  
+  private validateOutput(output: any): LLMOutput {
+    const schema = z.object({
+      summary: z.string().max(300),
+      tags: z.array(z.string()).max(10),
+      category: z.string(),
+      runtimeSupport: z.object({
+        node: z.boolean(),
+        edge: z.boolean(),
+        browser: z.boolean()
+      }),
+      qualityScore: z.number().min(0).max(100),
+      risks: z.string().optional()
+    });
+    
+    return schema.parse(output);
+  }
+}
+```
+
+### 成本控制
+```typescript
+class LLMCostController {
+  private dailyBudget: number = 100; // USD
+  private currentSpend: number = 0;
+  private requestQueue: LLMRequest[] = [];
+  
+  async processWithBudgetControl(requests: LLMRequest[]): Promise<LLMResult[]> {
+    const results: LLMResult[] = [];
+    
+    // 按优先级排序
+    const sortedRequests = this.prioritizeRequests(requests);
+    
+    for (const request of sortedRequests) {
+      if (this.currentSpend >= this.dailyBudget) {
+        console.warn('Daily LLM budget exceeded, queuing remaining requests');
+        this.requestQueue.push(...sortedRequests.slice(results.length));
+        break;
+      }
+      
+      try {
+        const result = await this.processRequest(request);
+        results.push(result);
+        
+        // 更新成本
+        this.currentSpend += this.estimateCost(request, result);
+        
+      } catch (error) {
+        console.error(`LLM processing failed for request ${request.id}:`, error);
+        results.push({ id: request.id, status: 'failed', error: error.message });
+      }
+    }
+    
+    return results;
+  }
+  
+  private prioritizeRequests(requests: LLMRequest[]): LLMRequest[] {
+    return requests.sort((a, b) => {
+      // 优先处理高质量来源
+      const aScore = this.getSourceQualityScore(a.source);
+      const bScore = this.getSourceQualityScore(b.source);
+      
+      if (aScore !== bScore) {
+        return bScore - aScore;
+      }
+      
+      // 其次按创建时间
+      return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+    });
+  }
+  
+  private estimateCost(request: LLMRequest, result: LLMResult): number {
+    // 基于 token 数量估算成本
+    const inputTokens = this.countTokens(request.prompt);
+    const outputTokens = this.countTokens(result.output);
+    
+    // DeepSeek 定价 (示例)
+    const inputCostPerToken = 0.00014 / 1000; // $0.14 per 1M tokens
+    const outputCostPerToken = 0.00028 / 1000; // $0.28 per 1M tokens
+    
+    return (inputTokens * inputCostPerToken) + (outputTokens * outputCostPerToken);
+  }
+}
+```
+
+## 缓存架构
+
+### 多层缓存策略
+```typescript
+class CacheManager {
+  private edgeCache: EdgeCache;
+  private redisCache: RedisCache;
+  private memoryCache: MemoryCache;
+  
+  async get<T>(key: string, options?: CacheOptions): Promise<T | null> {
+    // L1: 内存缓存 (最快)
+    let value = await this.memoryCache.get<T>(key);
+    if (value) {
+      return value;
+    }
+    
+    // L2: Redis 缓存 (中等速度)
+    value = await this.redisCache.get<T>(key);
+    if (value) {
+      // 回填内存缓存
+      await this.memoryCache.set(key, value, { ttl: 60 });
+      return value;
+    }
+    
+    // L3: Edge 缓存 (CDN)
+    value = await this.edgeCache.get<T>(key);
+    if (value) {
+      // 回填上层缓存
+      await this.redisCache.set(key, value, { ttl: 300 });
+      await this.memoryCache.set(key, value, { ttl: 60 });
+      return value;
+    }
+    
+    return null;
+  }
+  
+  async set<T>(key: string, value: T, options?: CacheOptions): Promise<void> {
+    const ttl = options?.ttl || 300;
+    
+    // 写入所有层级
+    await Promise.all([
+      this.memoryCache.set(key, value, { ttl: Math.min(ttl, 60) }),
+      this.redisCache.set(key, value, { ttl }),
+      this.edgeCache.set(key, value, { ttl: ttl * 2 }) // Edge 缓存更长时间
+    ]);
+  }
+  
+  async invalidate(pattern: string): Promise<void> {
+    await Promise.all([
+      this.memoryCache.invalidate(pattern),
+      this.redisCache.invalidate(pattern),
+      this.edgeCache.invalidate(pattern)
+    ]);
+  }
+}
+```
+
+### 智能缓存失效
+```typescript
+class CacheInvalidationService {
+  async invalidateToolRelatedCaches(toolId: number): Promise<void> {
+    const tool = await this.getToolById(toolId);
+    if (!tool) return;
+    
+    // 失效相关的缓存键
+    const patterns = [
+      `tools:${toolId}`,
+      `tools:slug:${tool.slug}`,
+      `tools:list:*`, // 所有列表页
+      `categories:${tool.categories.map(c => c.slug).join(',')}:*`,
+      `tags:${tool.tags.map(t => t.slug).join(',')}:*`,
+      `search:*`, // 搜索结果
+      `stats:*` // 统计数据
+    ];
+    
+    for (const pattern of patterns) {
+      await this.cacheManager.invalidate(pattern);
+    }
+    
+    // 触发 Next.js 重新验证
+    await this.revalidateNextJSPaths(tool);
+  }
+  
+  private async revalidateNextJSPaths(tool: Tool): Promise<void> {
+    const paths = [
+      '/', // 首页
+      '/tools', // 工具列表
+      `/tools/${tool.slug}`, // 工具详情
+      ...tool.categories.map(c => `/categories/${c.slug}`),
+      ...tool.tags.map(t => `/tags/${t.slug}`)
+    ];
+    
+    for (const path of paths) {
+      try {
+        await revalidatePath(path);
+      } catch (error) {
+        console.error(`Failed to revalidate path ${path}:`, error);
+      }
+    }
+  }
+}
+```
+
+## 性能监控架构
+
+### 指标收集
+```typescript
+class MetricsCollector {
+  private metrics: Map<string, Metric[]> = new Map();
+  
+  recordAPILatency(route: string, method: string, duration: number, status: number): void {
+    const key = `api.latency.${route}.${method}`;
+    this.addMetric(key, {
+      value: duration,
+      timestamp: Date.now(),
+      tags: { status: status.toString() }
+    });
+  }
+  
+  recordCrawlStats(sourceType: string, stats: CrawlStats): void {
+    const metrics = [
+      { key: `crawl.items.total.${sourceType}`, value: stats.totalItems },
+      { key: `crawl.items.new.${sourceType}`, value: stats.newItems },
+      { key: `crawl.duration.${sourceType}`, value: stats.duration },
+      { key: `crawl.api_calls.${sourceType}`, value: stats.apiCalls }
+    ];
+    
+    metrics.forEach(({ key, value }) => {
+      this.addMetric(key, {
+        value,
+        timestamp: Date.now(),
+        tags: { sourceType }
+      });
+    });
+  }
+  
+  recordLLMUsage(model: string, inputTokens: number, outputTokens: number, cost: number): void {
+    const metrics = [
+      { key: `llm.tokens.input.${model}`, value: inputTokens },
+      { key: `llm.tokens.output.${model}`, value: outputTokens },
+      { key: `llm.cost.${model}`, value: cost }
+    ];
+    
+    metrics.forEach(({ key, value }) => {
+      this.addMetric(key, {
+        value,
+        timestamp: Date.now(),
+        tags: { model }
+      });
+    });
+  }
+  
+  async flush(): Promise<void> {
+    // 发送到监控服务 (Vercel Analytics, Sentry, etc.)
+    for (const [key, metrics] of this.metrics) {
+      await this.sendMetrics(key, metrics);
+    }
+    
+    this.metrics.clear();
+  }
+}
+```
+
+### 性能预算
+```typescript
+const PERFORMANCE_BUDGETS = {
+  // API 响应时间 (ms)
+  api: {
+    edge: {
+      p50: 200,
+      p95: 500,
+      p99: 1000
+    },
+    node: {
+      p50: 400,
+      p95: 800,
+      p99: 1500
+    }
+  },
+  
+  // 页面加载时间 (ms)
+  pages: {
+    ttfb: 250,
+    fcp: 1000,
+    lcp: 2000,
+    cls: 0.1,
+    fid: 100
+  },
+  
+  // 资源大小 (KB)
+  resources: {
+    javascript: 500,
+    css: 100,
+    images: 1000,
+    fonts: 200
+  },
+  
+  // 数据库查询 (ms)
+  database: {
+    simple: 50,
+    complex: 200,
+    aggregation: 500
+  }
+};
+```
+
+## 安全架构
+
+### 认证授权
+```typescript
+class AuthService {
+  async authenticateAdmin(token: string): Promise<AdminUser | null> {
+    // 简单 token 认证
+    if (token === process.env.ADMIN_TOKEN) {
+      return {
+        id: 'admin',
+        role: 'admin',
+        permissions: ['read', 'write', 'delete', 'manage']
+      };
+    }
+    
+    // OAuth 认证 (未来扩展)
+    return await this.authenticateOAuth(token);
+  }
+  
+  async checkPermission(user: AdminUser, action: string, resource: string): Promise<boolean> {
+    const requiredPermissions = this.getRequiredPermissions(action, resource);
+    return requiredPermissions.every(permission => 
+      user.permissions.includes(permission)
+    );
+  }
+  
+  private getRequiredPermissions(action: string, resource: string): string[] {
+    const permissionMap = {
+      'read:tools': ['read'],
+      'write:tools': ['write'],
+      'delete:tools': ['delete'],
+      'manage:sources': ['manage'],
+      'manage:crawl': ['manage']
+    };
+    
+    return permissionMap[`${action}:${resource}`] || [];
+  }
+}
+```
+
+### 输入验证和清理
+```typescript
+class SecurityService {
+  sanitizeUserInput(input: string): string {
+    // XSS 防护
+    return DOMPurify.sanitize(input, {
+      ALLOWED_TAGS: [],
+      ALLOWED_ATTR: []
+    });
+  }
+  
+  validateURL(url: string): boolean {
+    try {
+      const parsed = new URL(url);
+      
+      // 只允许 HTTP/HTTPS
+      if (!['http:', 'https:'].includes(parsed.protocol)) {
+        return false;
+      }
+      
+      // 阻止内网地址
+      const hostname = parsed.hostname;
+      if (this.isPrivateIP(hostname)) {
+        return false;
+      }
+      
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  
+  private isPrivateIP(hostname: string): boolean {
+    const privateRanges = [
+      /^127\./, // localhost
+      /^10\./, // 10.0.0.0/8
+      /^172\.(1[6-9]|2[0-9]|3[0-1])\./, // 172.16.0.0/12
+      /^192\.168\./, // 192.168.0.0/16
+      /^169\.254\./, // 169.254.0.0/16 (link-local)
+    ];
+    
+    return privateRanges.some(range => range.test(hostname));
+  }
+}
+```
+
+## 部署架构
+
+### Vercel 配置
+```json
+{
+  "version": 2,
+  "builds": [
+    {
+      "src": "package.json",
+      "use": "@vercel/next"
+    }
+  ],
+  "functions": {
+    "app/api/admin/**": {
+      "maxDuration": 30
+    },
+    "app/api/cron/**": {
+      "maxDuration": 300
+    }
+  },
+  "crons": [
+    {
+      "path": "/api/cron/crawl",
+      "schedule": "0 2 * * *"
+    },
+    {
+      "path": "/api/cron/cleanup",
+      "schedule": "0 3 * * 0"
+    }
+  ],
+  "env": {
+    "DATABASE_URL": "@database_url",
+    "ADMIN_TOKEN": "@admin_token",
+    "DEEPSEEK_API_KEY": "@deepseek_api_key",
+    "GITHUB_TOKEN": "@github_token"
+  }
+}
+```
+
+### 环境配置
+```bash
+# 生产环境
+DATABASE_URL="postgresql://..."
+ADMIN_TOKEN="secure-random-token"
+NEXTAUTH_SECRET="nextauth-secret"
+NEXTAUTH_URL="https://mcphub.io"
+DEEPSEEK_API_KEY="sk-..."
+DEEPSEEK_BASE_URL="https://api.deepseek.com"
+GITHUB_TOKEN="ghp_..."
+
+# 应用配置
+NEXT_PUBLIC_APP_NAME="MCPHub"
+NEXT_PUBLIC_APP_DESCRIPTION="MCP 工具发现平台"
+NEXT_PUBLIC_APP_URL="https://mcphub.io"
+
+# 监控配置
+SENTRY_DSN="https://..."
+VERCEL_ANALYTICS_ID="..."
+```
+
+### CI/CD 流程
+```yaml
+name: Deploy
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run type-check
+      - run: npm run test
+      - run: npm run build
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v3
+      - uses: amondnet/vercel-action@v20
+        with:
+          vercel-token: ${{ secrets.VERCEL_TOKEN }}
+          vercel-org-id: ${{ secrets.VERCEL_ORG_ID }}
+          vercel-project-id: ${{ secrets.VERCEL_PROJECT_ID }}
+          vercel-args: '--prod'
+```
+
+这个系统设计文档详细描述了 MCPHub 的完整架构，包括前端组件设计、API 架构、数据模型、抓取流水线、AI 处理、缓存策略、性能监控、安全措施和部署配置。每个模块都有具体的实现细节和代码示例，为开发和维护提供了全面的技术指导。
     components/
       ui/...                  # 组件库封装
       cards/ToolCard.tsx      # 工具卡片
